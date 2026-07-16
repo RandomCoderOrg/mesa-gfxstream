@@ -3,6 +3,9 @@
 
 #include "dri_screen.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #define DEFINE_LOADER_DRM_ENTRYPOINT(drivername)                          \
 const __DRIextension **__driDriverGetExtensions_##drivername(void);       \
 PUBLIC const __DRIextension **__driDriverGetExtensions_##drivername(void) \
@@ -81,7 +84,18 @@ DEFINE_LOADER_DRM_ENTRYPOINT(vc4)
 #endif
 
 #if defined(GALLIUM_PANFROST)
-DEFINE_LOADER_DRM_ENTRYPOINT(panfrost)
+const __DRIextension **__driDriverGetExtensions_panfrost(void);
+
+PUBLIC const __DRIextension **
+__driDriverGetExtensions_panfrost(void)
+{
+   const char *x11_swrast = getenv("PAN_MALI_X11_SWRAST");
+
+   if (x11_swrast && strcmp(x11_swrast, "0"))
+      return galliumsw_driver_extensions;
+
+   return galliumdrm_driver_extensions;
+}
 #endif
 
 #if defined(GALLIUM_ASAHI)

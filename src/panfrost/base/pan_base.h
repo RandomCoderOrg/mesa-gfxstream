@@ -111,6 +111,10 @@ struct kbase_ {
         /* TODO: Per-context/queue locks? */
         pthread_mutex_t queue_lock;
 
+        /* Serialises JM submissions while allowing the event thread to drain
+         * completed atoms independently. */
+        pthread_mutex_t jm_submit_lock;
+
         struct list_head syncobjs;
 
         unsigned gpuprops_size;

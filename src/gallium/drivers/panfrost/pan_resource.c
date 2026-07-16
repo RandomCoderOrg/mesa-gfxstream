@@ -32,6 +32,8 @@
 
 #include <xf86drm.h>
 #include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
 #include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/drm.h"
 
@@ -408,6 +410,7 @@ panfrost_should_tile(struct panfrost_device *dev,
                      const struct panfrost_resource *pres,
                      enum pipe_format fmt)
 {
+        const char *x11_swrast = getenv("PAN_MALI_X11_SWRAST");
         const unsigned valid_binding =
                 PIPE_BIND_DEPTH_STENCIL |
                 PIPE_BIND_RENDER_TARGET |
@@ -416,6 +419,11 @@ panfrost_should_tile(struct panfrost_device *dev,
                 PIPE_BIND_DISPLAY_TARGET |
                 PIPE_BIND_SCANOUT |
                 PIPE_BIND_SHARED;
+
+        /* The X11 bridge reads display targets back on the CPU every frame. */
+        if ((pres->base.bind & PIPE_BIND_DISPLAY_TARGET) &&
+            x11_swrast && strcmp(x11_swrast, "0"))
+                return false;
 
         /* The purpose of tiling is improving locality in both X- and
          * Y-directions. If there is only a single pixel in either direction,

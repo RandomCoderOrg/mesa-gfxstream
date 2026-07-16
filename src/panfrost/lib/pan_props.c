@@ -73,6 +73,7 @@ const struct panfrost_model panfrost_model_list[] = {
         MODEL(0x7212, "G52", "TGOx", HAS_ANISO, 16384, {}),
         MODEL(0x7402, "G52 r1", "TGOx", HAS_ANISO, 16384, {}),
         MODEL(0x9093, "G57", "TNAx", HAS_ANISO, 16384, {}),
+        MODEL(0x9202, "G78", "TBOx", HAS_ANISO, 16384, { .no_afbc = true }),
         MODEL(0xa867, "G610", "LODx", HAS_ANISO, 65536, {}),
         /* Matching the kbase dummy model, probably not real GPUs */
         MODEL(0xa802, "G710", "TODx", HAS_ANISO, 65536, {}),
@@ -269,6 +270,9 @@ panfrost_supports_compressed_format(struct panfrost_device *dev, unsigned fmt)
 static bool
 panfrost_query_afbc(struct panfrost_device *dev, unsigned arch)
 {
+        if (dev->model->quirks.no_afbc)
+                return false;
+
         unsigned reg = panfrost_query_raw(dev,
                                           DRM_PANFROST_PARAM_AFBC_FEATURES,
                                           false, 0);

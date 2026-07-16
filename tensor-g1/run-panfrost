@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -eq 0 ]; then
+   echo "usage: $0 command [args ...]" >&2
+   exit 2
+fi
+
+prefix=${PANFROST_PREFIX:-/opt/panfork-tensor}
+libdir="$prefix/lib/aarch64-linux-gnu"
+
+export DISPLAY=${DISPLAY:-:0}
+export PAN_MALI_DEV=${PAN_MALI_DEV:-/dev/mali0}
+export MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-panfrost}
+export LIBGL_DRIVERS_PATH=${LIBGL_DRIVERS_PATH:-$libdir/dri}
+
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+   export LD_LIBRARY_PATH="$libdir:$LD_LIBRARY_PATH"
+else
+   export LD_LIBRARY_PATH="$libdir"
+fi
+
+exec "$@"

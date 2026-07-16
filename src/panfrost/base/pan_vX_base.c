@@ -528,6 +528,7 @@ kbase_close(kbase k)
         pthread_mutex_destroy(&k->event_read_lock);
         pthread_mutex_destroy(&k->event_cnd_lock);
         pthread_mutex_destroy(&k->queue_lock);
+        pthread_mutex_destroy(&k->jm_submit_lock);
         pthread_cond_destroy(&k->event_cnd);
 
         close(k->fd);
@@ -936,7 +937,12 @@ kbase_handle_events(kbase k)
 
                 pthread_mutex_lock(&k->handle_lock);
 
-                k->event_slots[event.atom_number].last = event.udata.blob[0];
+                /* Sync fences store the submitted sequence number while
+                 * event_slots[].last is a completed-sequence watermark.  Use
+                 * the next sequence here so kbase_syncobj_update()'s strict
+                 * comparison also completes the matching JM fence.
+                 */
+                k->event_slots[event.atom_number].last = event.udata.blob[0] + 1;
 
                 unsigned size = util_dynarray_num_elements(&k->gem_handles,
                                                            kbase_handle);
@@ -1117,11 +1123,59 @@ kbase_latest_slot(uint8_t a, uint8_t b, uint8_t newest)
         return a;
 }
 
+static bool
+kbase_jm_atoms_idle(kbase k)
+{
+        bool idle = true;
+
+        pthread_mutex_lock(&k->handle_lock);
+
+        for (unsigned i = 0; i < ARRAY_SIZE(k->atom_bos); ++i) {
+                if (k->atom_bos[i].data) {
+                        idle = false;
+                        break;
+                }
+        }
+
+        pthread_mutex_unlock(&k->handle_lock);
+        return idle;
+}
+
+static bool
+kbase_wait_jm_atoms_idle(kbase k)
+{
+        struct kbase_wait_ctx wait =
+                kbase_wait_init(k, 1 * 1000000000LL);
+
+        while (kbase_wait_for_event(&wait)) {
+                if (kbase_jm_atoms_idle(k)) {
+                        kbase_wait_fini(wait);
+                        return true;
+                }
+        }
+
+        kbase_wait_fini(wait);
+        fprintf(stderr, "Timed out draining JM atoms before ID wrap\n");
+        return false;
+}
+
 static int
 kbase_submit(kbase k, uint64_t va, unsigned req,
              struct kbase_syncobj *o,
              int32_t *handles, unsigned num_handles)
 {
+        pthread_mutex_lock(&k->jm_submit_lock);
+
+        /* JM atom and dependency IDs are only eight bits wide.  Do not let a
+         * new generation of IDs overlap jobs from the preceding generation:
+         * otherwise atom 0/1 can depend on a same-numbered stale atom after
+         * wrap and the kernel reports DATA_INVALID_FAULT. */
+        if (k->atom_number == 0 && k->job_seq != 0 &&
+            !kbase_wait_jm_atoms_idle(k)) {
+                pthread_mutex_unlock(&k->jm_submit_lock);
+                return -1;
+        }
+
         struct util_dynarray buf;
         util_dynarray_init(&buf, NULL);
 
@@ -1219,9 +1273,11 @@ kbase_submit(kbase k, uint64_t va, unsigned req,
 
         if (ret == -1) {
                 perror("ioctl(KBASE_IOCTL_JOB_SUBMIT)");
+                pthread_mutex_unlock(&k->jm_submit_lock);
                 return -1;
         }
 
+        pthread_mutex_unlock(&k->jm_submit_lock);
         return atom.atom_number;
 }
 
@@ -1758,6 +1814,7 @@ kbase_open_csf
         pthread_mutex_init(&k->event_read_lock, NULL);
         pthread_mutex_init(&k->event_cnd_lock, NULL);
         pthread_mutex_init(&k->queue_lock, NULL);
+        pthread_mutex_init(&k->jm_submit_lock, NULL);
 
         pthread_condattr_t attr;
         pthread_condattr_init(&attr);

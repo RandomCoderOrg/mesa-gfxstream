@@ -28,6 +28,8 @@
 
 #include "GL/internal/mesa_interface.h"
 #include "git_sha1.h"
+#include <stdlib.h>
+#include <string.h>
 #include "util/format/u_format.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
@@ -36,6 +38,11 @@
 #include "pipe-loader/pipe_loader.h"
 #include "frontend/drisw_api.h"
 #include "state_tracker/st_context.h"
+
+#ifdef HAVE_PANFROST
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include "dri_screen.h"
 #include "dri_context.h"
@@ -525,6 +532,81 @@ static const struct drisw_loader_funcs drisw_shm_lf = {
    .put_image_shm = drisw_put_image_shm
 };
 
+#ifdef HAVE_PANFROST
+static bool
+panfrost_drisw_enabled(void)
+{
+   const char *enabled = getenv("PAN_MALI_X11_SWRAST");
+
+   return enabled && strcmp(enabled, "0");
+}
+
+static void
+panfrost_drisw_flush_frontbuffer(struct pipe_screen *pscreen,
+                                 struct pipe_context *pipe,
+                                 struct pipe_resource *resource,
+                                 unsigned level, unsigned layer,
+                                 void *context_private,
+                                 struct pipe_box *sub_box)
+{
+   struct dri_drawable *drawable = context_private;
+   struct pipe_transfer *transfer = NULL;
+   struct pipe_box box;
+   void *map;
+
+   if (sub_box) {
+      box = *sub_box;
+      box.z = layer;
+      box.depth = 1;
+   } else {
+      u_box_3d(0, 0, layer, resource->width0, resource->height0, 1, &box);
+   }
+
+   map = pipe->texture_map(pipe, resource, level, PIPE_MAP_READ,
+                           &box, &transfer);
+   if (!map)
+      return;
+
+   drisw_put_image2(drawable, map, box.x, box.y,
+                    box.width, box.height, transfer->stride);
+   pipe->texture_unmap(pipe, transfer);
+}
+
+static struct pipe_screen *
+panfrost_drisw_create_screen(struct dri_screen *screen)
+{
+   const char *device = getenv("PAN_MALI_DEV");
+   struct pipe_screen *pscreen;
+   int fd;
+
+   if (!panfrost_drisw_enabled())
+      return NULL;
+
+   if (!device || !device[0])
+      device = "/dev/mali0";
+
+   fd = open(device, O_RDWR | O_CLOEXEC | O_NONBLOCK);
+   if (fd < 0)
+      return NULL;
+
+   setenv("MESA_LOADER_DRIVER_OVERRIDE", "panfrost", 0);
+   if (!pipe_loader_drm_probe_fd(&screen->dev, fd)) {
+      close(fd);
+      return NULL;
+   }
+   close(fd);
+
+   pscreen = pipe_loader_create_screen(screen->dev);
+   if (!pscreen) {
+      pipe_loader_release(&screen->dev, 1);
+      return NULL;
+   }
+
+   pscreen->flush_frontbuffer = panfrost_drisw_flush_frontbuffer;
+   return pscreen;
+}
+#endif
+
 static struct dri_drawable *
 drisw_create_drawable(struct dri_screen *screen, const struct gl_config * visual,
                       boolean isPixmap, void *loaderPrivate)
@@ -559,13 +641,18 @@ drisw_init_screen(struct dri_screen *screen)
    }
 
    bool success = false;
+#ifdef HAVE_PANFROST
+   pscreen = panfrost_drisw_create_screen(screen);
+   if (pscreen)
+      dri_init_options(screen);
+#endif
 #ifdef HAVE_DRISW_KMS
-   if (screen->fd != -1)
+   if (!pscreen && screen->fd != -1)
       success = pipe_loader_sw_probe_kms(&screen->dev, screen->fd);
 #endif
-   if (!success)
+   if (!pscreen && !success)
       success = pipe_loader_sw_probe_dri(&screen->dev, lf);
-   if (success) {
+   if (!pscreen && success) {
       pscreen = pipe_loader_create_screen(screen->dev);
       dri_init_options(screen);
    }

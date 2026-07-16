@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -eq 0 ]; then
+   echo "usage: $0 command [args ...]" >&2
+   exit 2
+fi
+
+# Select Mesa's CPU-present DRI frontend. In this fork that frontend creates a
+# Panfrost screen on /dev/mali0; only the completed window image is copied to X.
+export PAN_MALI_X11_SWRAST=${PAN_MALI_X11_SWRAST:-1}
+export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$script_dir/run-panfrost" "$@"

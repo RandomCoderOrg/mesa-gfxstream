@@ -1561,9 +1561,16 @@ panfrost_emit_const_buf(struct panfrost_batch *batch,
         }
 
         /* Copy push constants required by the shader */
+        unsigned push_align = (PAN_ARCH >= 6) ? 8 : 16;
+        size_t push_size = ALIGN_POT(ss->info.push.count * 4, push_align);
         struct panfrost_ptr push_transfer =
-                pan_pool_alloc_aligned(&batch->pool.base,
-                                       ss->info.push.count * 4, 16);
+                pan_pool_alloc_aligned(&batch->pool.base, push_size, 16);
+
+        /* FAU entries are 64-bit on Bifrost/Valhall.  When the shader pushes
+         * an odd number of 32-bit words, the hardware still fetches the final
+         * complete entry, so make the rounded tail defined rather than
+         * reading adjacent pool contents. */
+        memset(push_transfer.cpu, 0, push_size);
 
         uint32_t *push_cpu = (uint32_t *) push_transfer.cpu;
         *push_constants = push_transfer.gpu;
@@ -3899,17 +3906,45 @@ panfrost_emit_malloc_vertex(struct panfrost_batch *batch,
 
         pan_section_pack_cs_v10(job, &batch->cs_vertex, MALLOC_VERTEX_JOB, ALLOCATION, cfg) {
                 if (secondary_shader) {
-                        unsigned v = vs->info.varyings.output_count;
-                        unsigned f = fs->info.varyings.input_count;
-                        unsigned slots = MAX2(v, f);
-                        slots += util_bitcount(fs->key.fs.fixed_varying_mask);
-                        unsigned size = slots * 16;
+                        /* Valhall's desktop-GL ABI packs fixed varyings first,
+                         * followed by sparse generic VARYING_SLOT_VAR* slots.
+                         * Fixed varyings occupy the vertex packet, but only the
+                         * generic region contributes to the attribute stride. */
+                        unsigned generic_slots = 0;
+
+                        for (unsigned i = 0;
+                             i < vs->info.varyings.output_count; ++i) {
+                                gl_varying_slot loc =
+                                        vs->info.varyings.output[i].location;
+
+                                if (loc >= VARYING_SLOT_VAR0)
+                                        generic_slots = MAX2(
+                                                generic_slots,
+                                                loc - VARYING_SLOT_VAR0 + 1);
+                        }
+
+                        for (unsigned i = 0;
+                             i < fs->info.varyings.input_count; ++i) {
+                                gl_varying_slot loc =
+                                        fs->info.varyings.input[i].location;
+
+                                if (loc >= VARYING_SLOT_VAR0)
+                                        generic_slots = MAX2(
+                                                generic_slots,
+                                                loc - VARYING_SLOT_VAR0 + 1);
+                        }
+
+                        unsigned generic_size = generic_slots * 16;
 
                         /* Assumes 16 byte slots. We could do better. */
 #if PAN_ARCH < 10
-                        cfg.vertex_packet_stride = size + 16;
+                        unsigned fixed_slots =
+                                util_bitcount(fs->key.fs.fixed_varying_mask);
+
+                        cfg.vertex_packet_stride =
+                                16 + (fixed_slots * 16) + generic_size;
 #endif
-                        cfg.vertex_attribute_stride = size;
+                        cfg.vertex_attribute_stride = generic_size;
                 } else {
                         /* Hardware requirement for "no varyings" */
 #if PAN_ARCH < 10
@@ -3965,9 +4000,9 @@ panfrost_emit_malloc_vertex(struct panfrost_batch *batch,
                         mali_ptr ptr = batch->rsd[PIPE_SHADER_VERTEX] +
                                 (2 * pan_size(SHADER_PROGRAM));
 
-                        vary.shader = ptr;
-
-                        // TODO: Fix this function for v9!
+                        panfrost_emit_shader(batch, &vary,
+                                             PIPE_SHADER_VERTEX, ptr,
+                                             batch->tls.gpu);
                 }
         }
 }
@@ -5217,12 +5252,13 @@ prepare_shader(struct panfrost_compiled_shader *state,
 
         state->state = panfrost_pool_take_ref(pool, ptr.gpu);
 
-        // TODO: Why set primary_shader to false again?
-
         /* Generic, or IDVS/points */
         pan_pack(ptr.cpu, SHADER_PROGRAM, cfg) {
                 cfg.stage = pan_shader_stage(&state->info);
-                cfg.primary_shader = false;
+                /* On v9 this bit selects a half-warp limit for vertex
+                 * programs (and GL-style coverage for fragment programs).
+                 * Only the secondary varying program runs at a full warp. */
+                cfg.primary_shader = true;
                 cfg.register_allocation = pan_register_allocation(state->info.work_reg_count);
                 cfg.binary = state->bin.gpu;
                 cfg.preload.r48_r63 = (state->info.preload >> 48);
@@ -5238,7 +5274,7 @@ prepare_shader(struct panfrost_compiled_shader *state,
         /* IDVS/triangles */
         pan_pack(ptr.cpu + pan_size(SHADER_PROGRAM), SHADER_PROGRAM, cfg) {
                 cfg.stage = pan_shader_stage(&state->info);
-                cfg.primary_shader = false;
+                cfg.primary_shader = true;
                 cfg.register_allocation = pan_register_allocation(state->info.work_reg_count);
                 cfg.binary = state->bin.gpu + state->info.vs.no_psiz_offset;
                 cfg.preload.r48_r63 = (state->info.preload >> 48);

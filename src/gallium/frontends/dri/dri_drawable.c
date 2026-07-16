@@ -91,7 +91,8 @@ dri_st_framebuffer_validate(struct st_context_iface *stctx,
    struct pipe_screen *pscreen = screen->base.screen;
 
    if (new_mask & (1 << ST_ATTACHMENT_BACK_LEFT) &&
-       pscreen->set_damage_region) {
+       pscreen->set_damage_region &&
+       textures[ST_ATTACHMENT_BACK_LEFT]) {
       struct pipe_resource *resource = textures[ST_ATTACHMENT_BACK_LEFT];
 
       pscreen->set_damage_region(pscreen, resource,

@@ -1,6 +1,25 @@
 `Mesa <https://mesa3d.org>`_ - The 3D Graphics Library
 ======================================================
 
+Tensor G1 / Termux experimental port
+------------------------------------
+
+The ``tensor-g1`` branch contains an experimental userspace Panfrost bring-up
+for the Mali-G78 MP20 in Google Tensor G1. It runs inside a Jammy proot under
+Termux, submits directly to Android's existing Kbase ``/dev/mali0`` device, and
+presents to Termux:X11 through a CPU-copy bridge.
+
+This is a deliberately dirty research patch stack, not an upstream-quality or
+conformant driver. Basic EGL, GLES, GLX, glxgears, glmark2, and targeted dEQP
+smokes work; SuperTuxKart still renders most world geometry black. See the
+complete architecture, build instructions, screenshots, patch inventory, test
+results, and known issues in `tensor-g1/README.md
+<tensor-g1/README.md>`_.
+
+.. image:: tensor-g1/screenshots/glxinfo-renderer.png
+   :alt: glxinfo showing Mali-G78 rendered by Panfrost in Termux:X11
+   :width: 480px
+
 Valhall v10 "CSF" support branch—for Mali G710/G610.
 
 Note that firmware is required for these GPUs, for RK3588 try

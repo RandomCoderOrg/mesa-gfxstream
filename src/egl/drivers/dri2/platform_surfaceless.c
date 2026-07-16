@@ -232,6 +232,43 @@ static const __DRIextension *swrast_loader_extensions[] = {
 };
 
 static bool
+surfaceless_probe_mali(_EGLDisplay *disp)
+{
+   const char *device = getenv("PAN_MALI_DEV");
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+
+   if (!device || !device[0])
+      return false;
+
+   /* Kbase's event reader expects EAGAIN after draining pending events.  Some
+    * Kbase implementations reject enabling O_NONBLOCK with F_SETFL, so it
+    * must be part of the initial open just like the kmsro Mali fallback.
+    */
+   dri2_dpy->fd = open(device, O_RDWR | O_CLOEXEC | O_NONBLOCK);
+   if (dri2_dpy->fd < 0)
+      return false;
+
+   /* Kbase character devices are not DRM devices, so they cannot be added as
+    * EGL_EXT_device_drm devices.  The software device is only used as the EGL
+    * bookkeeping object; rendering is still performed by Panfrost.
+    */
+   disp->Device = _eglAddDevice(dri2_dpy->fd, true);
+   dri2_dpy->driver_name = strdup("panfrost");
+
+   if (!disp->Device || !dri2_dpy->driver_name ||
+       !dri2_load_driver_dri3(disp)) {
+      free(dri2_dpy->driver_name);
+      dri2_dpy->driver_name = NULL;
+      close(dri2_dpy->fd);
+      dri2_dpy->fd = -1;
+      return false;
+   }
+
+   dri2_dpy->loader_extensions = image_loader_extensions;
+   return true;
+}
+
+static bool
 surfaceless_probe_device(_EGLDisplay *disp, bool swrast)
 {
 #define MAX_DRM_DEVICES 64
@@ -339,7 +376,11 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
    /* When ForceSoftware is false, we try the HW driver.  When ForceSoftware
     * is true, we try kms_swrast and swrast in order.
     */
-   driver_loaded = surfaceless_probe_device(disp, disp->Options.ForceSoftware);
+   if (!disp->Options.ForceSoftware)
+      driver_loaded = surfaceless_probe_mali(disp);
+
+   if (!driver_loaded)
+      driver_loaded = surfaceless_probe_device(disp, disp->Options.ForceSoftware);
    if (!driver_loaded && disp->Options.ForceSoftware) {
       _eglLog(_EGL_DEBUG, "Falling back to surfaceless swrast without DRM.");
       driver_loaded = surfaceless_probe_device_sw(disp);

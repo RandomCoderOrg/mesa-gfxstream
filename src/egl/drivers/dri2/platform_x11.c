@@ -191,6 +191,60 @@ swrastPutImage(__DRIdrawable * draw, int op,
 }
 
 static void
+swrastPutImage2(__DRIdrawable *draw, int op,
+                int x, int y, int w, int h, int stride,
+                char *data, void *loaderPrivate)
+{
+   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   struct dri2_egl_display *dri2_dpy =
+      dri2_egl_display(dri2_surf->base.Resource.Display);
+   size_t hdr_len = sizeof(xcb_put_image_request_t);
+   size_t size = (hdr_len + stride * h) >> 2;
+   uint64_t max_req_len = xcb_get_maximum_request_length(dri2_dpy->conn);
+   xcb_gcontext_t gc;
+
+   switch (op) {
+   case __DRI_SWRAST_IMAGE_OP_DRAW:
+      gc = dri2_surf->gc;
+      break;
+   case __DRI_SWRAST_IMAGE_OP_SWAP:
+      gc = dri2_surf->swapgc;
+      break;
+   default:
+      return;
+   }
+
+   if (size < max_req_len) {
+      xcb_void_cookie_t cookie =
+         xcb_put_image(dri2_dpy->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
+                       dri2_surf->drawable, gc, w, h, x, y, 0,
+                       dri2_surf->depth, h * stride,
+                       (const uint8_t *)data);
+      xcb_discard_reply(dri2_dpy->conn, cookie.sequence);
+   } else {
+      int num_lines = ((max_req_len << 2) - hdr_len) / stride;
+      int y_start = 0;
+      int y_todo = h;
+
+      if (num_lines < 1)
+         return;
+
+      while (y_todo) {
+         int this_lines = MIN2(num_lines, y_todo);
+         xcb_void_cookie_t cookie =
+            xcb_put_image(dri2_dpy->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
+                          dri2_surf->drawable, gc, w, this_lines,
+                          x, y + y_start, 0, dri2_surf->depth,
+                          this_lines * stride,
+                          (const uint8_t *)data + y_start * stride);
+         xcb_discard_reply(dri2_dpy->conn, cookie.sequence);
+         y_start += this_lines;
+         y_todo -= this_lines;
+      }
+   }
+}
+
+static void
 swrastGetImage(__DRIdrawable * read,
                int x, int y, int w, int h,
                char *data, void *loaderPrivate)
@@ -1317,11 +1371,12 @@ static const struct dri2_egl_display_vtbl dri2_x11_display_vtbl = {
 };
 
 static const __DRIswrastLoaderExtension swrast_loader_extension = {
-   .base = { __DRI_SWRAST_LOADER, 1 },
+   .base = { __DRI_SWRAST_LOADER, 2 },
 
    .getDrawableInfo = swrastGetDrawableInfo,
    .putImage        = swrastPutImage,
    .getImage        = swrastGetImage,
+   .putImage2       = swrastPutImage2,
 };
 
 static_assert(sizeof(struct kopper_vk_surface_create_storage) >= sizeof(VkXcbSurfaceCreateInfoKHR), "");
@@ -1446,6 +1501,7 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
 {
    _EGLDevice *dev;
    struct dri2_egl_display *dri2_dpy;
+   const char *pan_mali_x11 = getenv("PAN_MALI_X11_SWRAST");
 
    dri2_dpy = calloc(1, sizeof *dri2_dpy);
    if (!dri2_dpy)
@@ -1467,7 +1523,9 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
     * Every hardware driver_name is set using strdup. Doing the same in
     * here will allow is to simply free the memory at dri2_terminate().
     */
-   dri2_dpy->driver_name = strdup(disp->Options.Zink ? "zink" : "swrast");
+   dri2_dpy->driver_name = strdup(pan_mali_x11 && strcmp(pan_mali_x11, "0") ?
+                                  "panfrost" :
+                                  (disp->Options.Zink ? "zink" : "swrast"));
    if (!dri2_load_driver_swrast(disp))
       goto cleanup;
 

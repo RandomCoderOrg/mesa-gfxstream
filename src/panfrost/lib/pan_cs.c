@@ -958,7 +958,7 @@ GENX(pan_emit_tiler_heap)(const struct panfrost_device *dev,
         pan_pack(out, TILER_HEAP, heap) {
                 heap.size = dev->tiler_heap->size;
                 heap.base = dev->tiler_heap->ptr.gpu;
-                heap.bottom = dev->tiler_heap->ptr.gpu + 64;
+                heap.bottom = dev->tiler_heap->ptr.gpu;
                 heap.top = dev->tiler_heap->ptr.gpu + dev->tiler_heap->size;
         }
 }

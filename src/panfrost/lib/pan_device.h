@@ -175,6 +175,9 @@ struct panfrost_model {
                  * size for the entire framebuffer be selected by the driver
                  */
                 bool no_hierarchical_tiling;
+
+                /* The driver's AFBC path is not usable on this model. */
+                bool no_afbc;
         } quirks;
 };
 

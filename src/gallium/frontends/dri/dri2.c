@@ -2054,9 +2054,10 @@ dri2_set_damage_region(__DRIdrawable *dPriv, unsigned int nrects, int *rects)
       else
          resource = drawable->textures[ST_ATTACHMENT_BACK_LEFT];
 
-      screen->set_damage_region(screen, resource,
-                                drawable->num_damage_rects,
-                                drawable->damage_rects);
+      if (resource)
+         screen->set_damage_region(screen, resource,
+                                   drawable->num_damage_rects,
+                                   drawable->damage_rects);
    }
 }
 
