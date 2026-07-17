@@ -4,6 +4,10 @@ This directory contains an experimental userspace Panfrost port for the
 Mali-G78 MP20 in Google Tensor G1. It submits jobs directly to Android's Kbase
 `/dev/mali0` node; it does not replace or modify the Android kernel driver.
 
+This document covers the open-source OpenGL path. The separate proprietary
+Vulkan integration is documented in
+[`vulkan-wrapper/README.md`](vulkan-wrapper/README.md).
+
 > [!WARNING]
 > This is a device bring-up branch made from deliberately dirty, invasive
 > patches. It is not an upstream-quality driver, it is not conformant, and it
@@ -108,37 +112,37 @@ Build the bounded verification programs:
 
 ```sh
 cc -O2 -Wall -Wextra \
-  -I/opt/panfork-tensor/include tensor-g1/egl-smoke.c \
+  -I/opt/panfork-tensor/include tensor-g1/panfork/egl-smoke.c \
   -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -lEGL -lGLESv2 -o egl-smoke
 
 cc -O2 -Wall -Wextra \
-  -I/opt/panfork-tensor/include tensor-g1/egl-x11-smoke.c \
+  -I/opt/panfork-tensor/include tensor-g1/panfork/egl-x11-smoke.c \
   -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -lEGL -lGLESv2 -lX11 -o egl-x11-smoke
 
 cc -O2 -Wall -Wextra \
-  -I/opt/panfork-tensor/include tensor-g1/glx-x11-smoke.c \
+  -I/opt/panfork-tensor/include tensor-g1/panfork/glx-x11-smoke.c \
   -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -lGL -lX11 -o glx-x11-smoke
 
 cc -O2 -Wall -Wextra \
-  -I/opt/panfork-tensor/include tensor-g1/glx-x11-bc3.c \
+  -I/opt/panfork-tensor/include tensor-g1/panfork/glx-x11-bc3.c \
   -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -lGL -lX11 -o glx-x11-bc3
 
 cc -O2 -Wall -Wextra \
-  -I/opt/panfork-tensor/include tensor-g1/egl-x11-triangle.c \
+  -I/opt/panfork-tensor/include tensor-g1/panfork/egl-x11-triangle.c \
   -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -lEGL -lGLESv2 -lX11 -o egl-x11-triangle
 
 cc -O2 -Wall -Wextra \
-  -I/opt/panfork-tensor/include tensor-g1/glx-x11-triangle.c \
+  -I/opt/panfork-tensor/include tensor-g1/panfork/glx-x11-triangle.c \
   -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -lGL -lX11 -o glx-x11-triangle
@@ -149,19 +153,19 @@ cc -O2 -Wall -Wextra \
 The surfaceless test does not require a display:
 
 ```sh
-tensor-g1/run-panfrost ./egl-smoke
+tensor-g1/panfork/run-panfrost ./egl-smoke
 ```
 
 Start Termux:X11 on display `:0` before running windowed applications, then
 use the X11 wrapper:
 
 ```sh
-tensor-g1/run-panfrost-x11 ./egl-x11-smoke
-tensor-g1/run-panfrost-x11 ./glx-x11-smoke
-tensor-g1/run-panfrost-x11 ./egl-x11-triangle
-tensor-g1/run-panfrost-x11 ./glx-x11-triangle
-PAN_MESA_DEBUG=sync tensor-g1/run-panfrost-x11 ./glx-x11-bc3
-tensor-g1/run-panfrost-x11 your-application
+tensor-g1/panfork/run-panfrost-x11 ./egl-x11-smoke
+tensor-g1/panfork/run-panfrost-x11 ./glx-x11-smoke
+tensor-g1/panfork/run-panfrost-x11 ./egl-x11-triangle
+tensor-g1/panfork/run-panfrost-x11 ./glx-x11-triangle
+PAN_MESA_DEBUG=sync tensor-g1/panfork/run-panfrost-x11 ./glx-x11-bc3
+tensor-g1/panfork/run-panfrost-x11 your-application
 ```
 
 The BC3 probe uploads one known opaque-red DXT5 block and reads its centre
@@ -171,10 +175,10 @@ For the current desktop-GL smoke targets:
 
 ```sh
 apt-get install glmark2 mesa-utils
-tensor-g1/run-panfrost-x11 glxgears
-tensor-g1/run-panfrost-x11 glmark2 -s 300x300 \
+tensor-g1/panfork/run-panfrost-x11 glxgears
+tensor-g1/panfork/run-panfrost-x11 glmark2 -s 300x300 \
   -b build:duration=5.0:use-vbo=true
-tensor-g1/run-panfrost-x11 glmark2 --validate
+tensor-g1/panfork/run-panfrost-x11 glmark2 --validate
 ```
 
 The X11 wrapper sets `LIBGL_ALWAYS_SOFTWARE=1` only to select Mesa's software
@@ -184,7 +188,7 @@ Panfrost renderer; `GL_RENDERER` must still report `Mali-G78 (Panfrost)`.
 For the currently safer diagnostic mode, serialise GPU work:
 
 ```sh
-PAN_MESA_DEBUG=sync tensor-g1/run-panfrost-x11 glxgears
+PAN_MESA_DEBUG=sync tensor-g1/panfork/run-panfrost-x11 glxgears
 ```
 
 This costs performance. An unsynchronised windowed glxgears run rendered
