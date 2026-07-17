@@ -6,9 +6,13 @@ if [ "$#" -eq 0 ]; then
    exit 2
 fi
 
-# Select Mesa's CPU-present DRI frontend. In this fork that frontend creates a
-# Panfrost screen on /dev/mali0; only the completed window image is copied to X.
+# Select Mesa's software-presentation DRI frontend. In this fork it creates a
+# Panfrost screen on /dev/mali0 and hands DMA-heap display targets to
+# Termux:X11 through DRI3. Set PAN_MALI_X11_DRI3=0 for the older CPU-upload
+# fallback.
 export PAN_MALI_X11_SWRAST=${PAN_MALI_X11_SWRAST:-1}
+export PAN_MALI_X11_DRI3=${PAN_MALI_X11_DRI3:-1}
+export PAN_MALI_DMABUF_IMPORT=${PAN_MALI_DMABUF_IMPORT:-1}
 export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

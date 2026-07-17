@@ -34,6 +34,7 @@
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 #include "util/u_box.h"
+#include <unistd.h>
 #include "pipe/p_context.h"
 #include "pipe-loader/pipe_loader.h"
 #include "frontend/drisw_api.h"
@@ -41,7 +42,6 @@
 
 #ifdef HAVE_PANFROST
 #include <fcntl.h>
-#include <unistd.h>
 #endif
 
 #include "dri_screen.h"
@@ -221,6 +221,33 @@ drisw_copy_to_front(struct pipe_context *pipe,
    drisw_invalidate_drawable(drawable);
 }
 
+static bool
+drisw_present_dmabuf(struct dri_drawable *drawable,
+                     struct pipe_resource *ptex)
+{
+   const __DRIswrastLoaderExtension *loader = drawable->screen->swrast_loader;
+   struct winsys_handle whandle = {
+      .type = WINSYS_HANDLE_TYPE_FD,
+   };
+   bool presented;
+
+   if (loader->base.version < 7 || !loader->putImageDmaBuf)
+      return false;
+
+   if (!ptex->screen->resource_get_handle(ptex->screen, NULL, ptex,
+                                           &whandle,
+                                           PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE))
+      return false;
+
+   presented = loader->putImageDmaBuf(opaque_dri_drawable(drawable),
+                                      whandle.handle,
+                                      ptex->width0, ptex->height0,
+                                      whandle.stride, whandle.modifier,
+                                      drawable->loaderPrivate);
+   close(whandle.handle);
+   return presented;
+}
+
 /*
  * Backend functions for st_framebuffer interface and swap_buffers.
  */
@@ -263,7 +290,18 @@ drisw_swap_buffers(struct dri_drawable *drawable)
       screen->base.screen->fence_finish(screen->base.screen, ctx->st->pipe,
                                         fence, PIPE_TIMEOUT_INFINITE);
       screen->base.screen->fence_reference(screen->base.screen, &fence, NULL);
-      drisw_copy_to_front(ctx->st->pipe, drawable, ptex);
+      if (drisw_present_dmabuf(drawable, ptex)) {
+         drisw_invalidate_drawable(drawable);
+      } else {
+         const char *dmabuf = getenv("PAN_MALI_X11_DRI3_ACTIVE");
+
+         /* An imported Kbase DMA-BUF cannot safely enter the CPU readback
+          * fallback: the old cache-sync path faults while mapping it. Keep
+          * failures visible instead of turning an X11 error into SIGBUS.
+          */
+         if (!dmabuf || !strcmp(dmabuf, "0"))
+            drisw_copy_to_front(ctx->st->pipe, drawable, ptex);
+      }
 
       /* TODO: remove this if the framebuffer state doesn't change. */
       ctx->st->invalidate_state(ctx->st, ST_INVALIDATE_FB_STATE);
@@ -576,6 +614,7 @@ static struct pipe_screen *
 panfrost_drisw_create_screen(struct dri_screen *screen)
 {
    const char *device = getenv("PAN_MALI_DEV");
+   const char *dri3 = getenv("PAN_MALI_X11_DRI3");
    struct pipe_screen *pscreen;
    int fd;
 
@@ -584,6 +623,13 @@ panfrost_drisw_create_screen(struct dri_screen *screen)
 
    if (!device || !device[0])
       device = "/dev/mali0";
+
+   if (dri3 && strcmp(dri3, "0") &&
+       screen->swrast_loader->base.version >= 7 &&
+       screen->swrast_loader->putImageDmaBuf)
+      setenv("PAN_MALI_X11_DRI3_ACTIVE", "1", 1);
+   else
+      unsetenv("PAN_MALI_X11_DRI3_ACTIVE");
 
    fd = open(device, O_RDWR | O_CLOEXEC | O_NONBLOCK);
    if (fd < 0)

@@ -2226,9 +2226,20 @@ dri2_init_screen_extensions(struct dri_screen *screen,
 
    if (pscreen->get_param(pscreen, PIPE_CAP_DMABUF)) {
       uint64_t cap;
+      bool can_import_dmabuf = false;
 
       if (drmGetCap(screen->fd, DRM_CAP_PRIME, &cap) == 0 &&
-          (cap & DRM_PRIME_CAP_IMPORT)) {
+          (cap & DRM_PRIME_CAP_IMPORT))
+         can_import_dmabuf = true;
+
+      /* Android Kbase is not a DRM device, so drmGetCap() cannot report
+       * PRIME support. Panfrost's Kbase winsys can still import DMA-BUFs via
+       * KBASE_IOCTL_MEM_IMPORT. Keep this opt-in while the rootless DRI3 path
+       * is being validated rather than claiming it for every non-DRM winsys. */
+      if (debug_get_bool_option("PAN_MALI_DMABUF_IMPORT", false))
+         can_import_dmabuf = true;
+
+      if (can_import_dmabuf) {
          screen->image_extension.createImageFromFds = dri2_from_fds;
          screen->image_extension.createImageFromFds2 = dri2_from_fds2;
          screen->image_extension.createImageFromDmaBufs = dri2_from_dma_bufs;

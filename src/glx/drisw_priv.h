@@ -27,6 +27,7 @@
 #define DRISW_PRIV_H
 
 #include <X11/extensions/XShm.h>
+#include <xcb/present.h>
 #include "kopper_interface.h"
 #include "GL/internal/mesa_interface.h"
 
@@ -69,6 +70,10 @@ struct drisw_drawable
    XShmSegmentInfo shminfo;
    int xDepth;
    int swapInterval;
+   xcb_present_event_t present_event_id;
+   xcb_special_event_t *present_special_event;
+   uint32_t present_serial;
+   uint32_t present_stamp;
 };
 
 _X_HIDDEN int

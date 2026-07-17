@@ -24,11 +24,14 @@
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
 
 #include <xcb/xproto.h>
+#include <xcb/dri3.h>
+#include <xcb/present.h>
 #include <xcb/shm.h>
 #include <X11/Xlib.h>
 #include <X11/Xlib-xcb.h>
 #include "glxclient.h"
 #include <dlfcn.h>
+#include <fcntl.h>
 #include "dri_common.h"
 #include "drisw_priv.h"
 #include <X11/extensions/shmproto.h>
@@ -122,6 +125,15 @@ XCreateDrawable(struct drisw_drawable * pdp, int shmid, Display * dpy)
 static void
 XDestroyDrawable(struct drisw_drawable * pdp, Display * dpy, XID drawable)
 {
+   (void)drawable;
+
+   if (pdp->present_special_event) {
+      xcb_connection_t *conn = XGetXCBConnection(dpy);
+
+      xcb_unregister_for_special_event(conn, pdp->present_special_event);
+      pdp->present_special_event = NULL;
+   }
+
    if (pdp->ximage)
       XDestroyImage(pdp->ximage);
 
@@ -269,6 +281,100 @@ swrastPutImage(__DRIdrawable * draw, int op,
                    data, loaderPrivate);
 }
 
+static unsigned char
+swrastPutImageDmaBuf(__DRIdrawable *draw, int fd, int w, int h,
+                     int stride, uint64_t modifier, void *loaderPrivate)
+{
+   struct drisw_drawable *pdp = loaderPrivate;
+   const char *enabled = getenv("PAN_MALI_X11_DRI3");
+   const char *zero_copy = getenv("PAN_MALI_X11_DRI3_ZERO_COPY");
+   xcb_connection_t *conn;
+   xcb_pixmap_t pixmap;
+   xcb_void_cookie_t cookie;
+   xcb_generic_error_t *error;
+   xcb_generic_event_t *event;
+   uint32_t serial;
+   int x_fd;
+
+   if (!pdp || !enabled || !strcmp(enabled, "0") || fd < 0)
+      return GL_FALSE;
+
+   conn = XGetXCBConnection(pdp->base.psc->dpy);
+   if (!conn || xcb_connection_has_error(conn))
+      return GL_FALSE;
+
+   if (!pdp->present_special_event) {
+      pdp->present_event_id = xcb_generate_id(conn);
+      cookie = xcb_present_select_input_checked(
+         conn, pdp->present_event_id, pdp->base.xDrawable,
+         XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY |
+         XCB_PRESENT_EVENT_MASK_IDLE_NOTIFY);
+      error = xcb_request_check(conn, cookie);
+      if (error) {
+         free(error);
+         return GL_FALSE;
+      }
+      pdp->present_special_event = xcb_register_for_special_xge(
+         conn, &xcb_present_id, pdp->present_event_id,
+         &pdp->present_stamp);
+      if (!pdp->present_special_event)
+         return GL_FALSE;
+   }
+
+   x_fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+   if (x_fd < 0)
+      return GL_FALSE;
+
+   XFlush(pdp->base.psc->dpy);
+   pixmap = xcb_generate_id(conn);
+   cookie = xcb_dri3_pixmap_from_buffers_checked(
+      conn, pixmap, pdp->base.xDrawable, 1, w, h,
+      stride, 0, 0, 0, 0, 0, 0, 0,
+      pdp->xDepth, 32, modifier, &x_fd);
+   error = xcb_request_check(conn, cookie);
+   if (error) {
+      free(error);
+      return GL_FALSE;
+   }
+
+   serial = ++pdp->present_serial;
+   cookie = xcb_present_pixmap_checked(
+      conn, pdp->base.xDrawable, pixmap, serial,
+      XCB_NONE, XCB_NONE, 0, 0,
+      XCB_NONE, XCB_NONE, XCB_NONE,
+      XCB_PRESENT_OPTION_ASYNC |
+         ((zero_copy && strcmp(zero_copy, "0")) ?
+             XCB_PRESENT_OPTION_NONE : XCB_PRESENT_OPTION_COPY),
+      0, 0, 0, 0, NULL);
+   error = xcb_request_check(conn, cookie);
+   if (error) {
+      free(error);
+      xcb_free_pixmap(conn, pixmap);
+      xcb_flush(conn);
+      return GL_FALSE;
+   }
+
+   do {
+      event = xcb_wait_for_special_event(conn, pdp->present_special_event);
+      if (!event) {
+         xcb_free_pixmap(conn, pixmap);
+         xcb_flush(conn);
+         return GL_FALSE;
+      }
+
+      xcb_present_generic_event_t *generic = (void *)event;
+      bool idle = generic->evtype == XCB_PRESENT_EVENT_IDLE_NOTIFY &&
+                  ((xcb_present_idle_notify_event_t *)event)->pixmap == pixmap;
+      free(event);
+      if (idle)
+         break;
+   } while (true);
+
+   xcb_free_pixmap(conn, pixmap);
+   xcb_flush(conn);
+   return GL_TRUE;
+}
+
 static void
 swrastGetImage2(__DRIdrawable * read,
                 int x, int y, int w, int h, int stride,
@@ -345,7 +451,7 @@ swrastGetImageShm(__DRIdrawable * read,
 }
 
 static const __DRIswrastLoaderExtension swrastLoaderExtension_shm = {
-   .base = {__DRI_SWRAST_LOADER, 6 },
+   .base = {__DRI_SWRAST_LOADER, 7 },
 
    .getDrawableInfo     = swrastGetDrawableInfo,
    .putImage            = swrastPutImage,
@@ -356,16 +462,18 @@ static const __DRIswrastLoaderExtension swrastLoaderExtension_shm = {
    .getImageShm         = swrastGetImageShm,
    .putImageShm2        = swrastPutImageShm2,
    .getImageShm2        = swrastGetImageShm2,
+   .putImageDmaBuf      = swrastPutImageDmaBuf,
 };
 
 static const __DRIswrastLoaderExtension swrastLoaderExtension = {
-   .base = {__DRI_SWRAST_LOADER, 3 },
+   .base = {__DRI_SWRAST_LOADER, 7 },
 
    .getDrawableInfo     = swrastGetDrawableInfo,
    .putImage            = swrastPutImage,
    .getImage            = swrastGetImage,
    .putImage2           = swrastPutImage2,
    .getImage2           = swrastGetImage2,
+   .putImageDmaBuf      = swrastPutImageDmaBuf,
 };
 
 static_assert(sizeof(struct kopper_vk_surface_create_storage) >= sizeof(VkXcbSurfaceCreateInfoKHR), "");

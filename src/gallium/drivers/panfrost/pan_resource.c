@@ -32,8 +32,10 @@
 
 #include <xf86drm.h>
 #include <fcntl.h>
+#include <linux/dma-heap.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/drm.h"
 
@@ -762,6 +764,50 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                 }
 
                 panfrost_bo_mmap_scanout(so->image.data.bo, dev->ro, so->scanout);
+        } else if ((template->bind & PIPE_BIND_DISPLAY_TARGET) &&
+                   getenv("PAN_MALI_X11_DRI3_ACTIVE") &&
+                   strcmp(getenv("PAN_MALI_X11_DRI3_ACTIVE"), "0") &&
+                   so->image.layout.modifier == DRM_FORMAT_MOD_LINEAR) {
+                const char *heap_name = getenv("PAN_MALI_DMA_HEAP");
+                char heap_path[128];
+                struct dma_heap_allocation_data allocation = {
+                        .len = so->image.layout.data_size,
+                        .fd_flags = O_RDWR | O_CLOEXEC,
+                };
+                int heap_fd;
+
+                if (!heap_name || !heap_name[0])
+                        heap_name = "system";
+
+                if (snprintf(heap_path, sizeof(heap_path),
+                             "/dev/dma_heap/%s", heap_name) >=
+                    (int)sizeof(heap_path)) {
+                        fprintf(stderr, "Panfork DRI3 DMA heap name is too long\n");
+                        free(so);
+                        return NULL;
+                }
+
+                heap_fd = open(heap_path, O_RDONLY | O_CLOEXEC);
+                if (heap_fd < 0 ||
+                    ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &allocation) < 0) {
+                        fprintf(stderr, "Panfork DRI3 DMA heap allocation failed: %s\n",
+                                strerror(errno));
+                        if (heap_fd >= 0)
+                                close(heap_fd);
+                        free(so);
+                        return NULL;
+                }
+                close(heap_fd);
+
+                so->image.data.bo = panfrost_bo_import(dev, allocation.fd);
+                close(allocation.fd);
+                if (!so->image.data.bo) {
+                        fprintf(stderr, "Panfork DRI3 Kbase import failed\n");
+                        free(so);
+                        return NULL;
+                }
+
+                so->constant_stencil = true;
         } else {
                 /* We create a BO immediately but don't bother mapping, since we don't
                  * care to map e.g. FBOs which the CPU probably won't touch */

@@ -149,7 +149,7 @@ libgl = shared_library(
   dependencies : [
     dep_libdrm, dep_dl, dep_m, dep_thread, dep_x11, dep_xcb_glx, dep_xcb,
     dep_x11_xcb, dep_xcb_dri2, dep_xext, dep_xfixes, dep_xxf86vm,
-    dep_xcb_shm, extra_deps_libgl,
+    dep_xcb_shm, dep_xcb_dri3, dep_xcb_present, extra_deps_libgl,
   ],
   version : gl_lib_version,
   darwin_versions : '4.0.0',

@@ -234,16 +234,18 @@ resolution, synchronization, and Tensor G1 thermal throttling.
   Buffer-release behavior matters more than the absence of a blit.
 - Swap control, broad Vulkan CTS coverage, Wine/Proton, and real Vulkan games
   remain unverified.
-- The open-source Panfork OpenGL route still uses CPU-copy presentation and is
-  not accelerated by this Vulkan WSI change.
+- The open-source Panfork OpenGL route now has its own DMA-heap/Kbase/DRI3
+  presenter. It is independent of this Vulkan WSI layer.
 
-## Next performance milestone
+## Follow-on OpenGL milestone (completed 2026-07-17)
 
-The same rootless primitives point to the next large OpenGL improvement:
-allocate Panfork display targets from `/dev/dma_heap/system-uncached`, import
-those DMA-BUFs into Kbase through the existing `BASE_MEM_IMPORT_TYPE_UMM`
-path, and present them to Termux:X11 through DRI3. That would replace Panfork's
-current linear framebuffer readback and MIT-SHM copy without requiring root.
+The same rootless primitives were reused by Panfork: linear display targets
+are allocated from `/dev/dma_heap/system`, imported into Kbase through
+`BASE_MEM_IMPORT_TYPE_UMM`, exported at swap, and presented to Termux:X11 as
+DRI3 1.2 pixmaps. This removes Panfork's per-frame framebuffer readback and
+MIT-SHM upload without root. Termux:X11 still chooses a server-side copy for
+the reliable mode; strict no-copy Present is accepted but remains invisible
+under the tested GNOME/Mutter session.
 
 ## References
 

@@ -7,7 +7,7 @@ This repository carries three deliberately separate acceleration paths:
 
 | Path | API and userspace | Rendering and presentation |
 | --- | --- | --- |
-| Panfork/Panfrost | OpenGL and OpenGL ES in glibc PRoot distributions | Patched Mesa submits directly to Android Kbase `/dev/mali0`; completed linear frames are copied to Termux:X11. |
+| Panfork/Panfrost | OpenGL and OpenGL ES in glibc PRoot distributions | Patched Mesa submits directly to Android Kbase `/dev/mali0`; GLX DMA-heap display targets use DRI3, while EGL retains the CPU presenter. |
 | Mali Vulkan wrapper | Vulkan for native Termux/Bionic programs | Mesa wrapper adds X11/XCB WSI around Android's proprietary Mali Vulkan driver. |
 | libhybris Vulkan | Vulkan for glibc PRoot programs | sysvk and libhybris call the Android Mali Vulkan HAL; a patched WSI layer presents DMA-BUFs through Termux:X11 DRI3. |
 
@@ -29,7 +29,9 @@ README.rst                        original Mesa/Panfork project README
 ## Current verified status
 
 The open-source Panfork path reports `Mali-G78 (Panfrost)` and runs EGL, GLX,
-glxgears, glmark2, GNOME, and SuperTuxKart with known limitations documented in
+glxgears, glmark2, GNOME, and SuperTuxKart. Its rootless DRI3 path removes the
+old per-frame client readback/upload, while Termux:X11 still performs the
+final server-side copy. Known limitations are documented in
 [`tensor-g1/README.md`](tensor-g1/README.md).
 
 The proprietary Vulkan path reports the real Mali-G78 r54p3 driver with Vulkan

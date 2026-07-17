@@ -562,7 +562,7 @@ struct __DRIsystemTimeExtensionRec {
  * Version 1 is advertised by the X server.
  */
 #define __DRI_SWRAST_LOADER "DRI_SWRastLoader"
-#define __DRI_SWRAST_LOADER_VERSION 6
+#define __DRI_SWRAST_LOADER_VERSION 7
 struct __DRIswrastLoaderExtensionRec {
     __DRIextension base;
 
@@ -652,6 +652,19 @@ struct __DRIswrastLoaderExtensionRec {
     unsigned char (*getImageShm2)(__DRIdrawable *readable,
                                   int x, int y, int width, int height,
                                   int shmid, void *loaderPrivate);
+
+    /**
+     * Present a linear DMA-BUF without a client-side CPU readback/upload.
+     *
+     * This private v7 hook is used by the Tensor G1 Kbase/Termux:X11 bridge.
+     * The loader must not take ownership of fd.
+     *
+     * \since 7
+     */
+    unsigned char (*putImageDmaBuf)(__DRIdrawable *drawable,
+                                    int fd, int width, int height,
+                                    int stride, uint64_t modifier,
+                                    void *loaderPrivate);
 };
 
 /**

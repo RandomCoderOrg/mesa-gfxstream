@@ -16,9 +16,10 @@ Vulkan integration is documented in
 > bugs.
 
 Tested on a Pixel 6a from a uDroid Ubuntu 22.04 (Jammy) proot. Rendering is
-performed by Panfrost. Window presentation uses a CPU copy into X11 because
-Termux:X11 cannot import Kbase allocations as DRM dma-bufs. VirGL and ANGLE are
-not used.
+performed by Panfrost. The current GLX window path allocates linear display
+targets from Android's DMA heap, imports them into Kbase, and presents the same
+DMA-BUF to Termux:X11 through DRI3. EGL keeps the older CPU presenter until its
+loader gains the same private callback. VirGL and ANGLE are not used.
 
 ## Proof of hardware rendering
 
@@ -38,17 +39,30 @@ the captures because these are unedited `adb screencap` images from the Pixel
 
 ## How this works
 
+```mermaid
+flowchart LR
+    APP["Linux GLX application"] --> GLX["Mesa GLX and patched drisw"]
+    HEAP["Android system DMA heap"] -->|"allocate linear display target"| BUF["DMA-BUF"]
+    GLX --> PAN["Panfork / Panfrost"]
+    PAN -->|"Kbase UMM import and GPU render"| BUF
+    BUF -->|"export fd at swap"| GLX
+    GLX -->|"DRI3 PixmapFromBuffers"| X11["Termux:X11 Present"]
+    X11 -->|"reliable server-side copy"| SURFACE["Android display surface"]
+```
+
 There are two separate paths:
 
 1. **Rendering:** Mesa opens Android's existing Kbase character device
    (`/dev/mali0`) and submits Mali Job Manager atoms directly. Panfrost compiles
    shaders and allocates all GPU buffers. This is hardware rendering, not
    llvmpipe.
-2. **Presentation:** Termux:X11 cannot import these Kbase allocations as DRM
-   dma-bufs. The patched DRI software-presentation frontend maps the completed
-   linear Panfrost display target on the CPU and sends it to X11 with
-   `xcb_put_image`. Large frames are split to respect XCB's maximum request
-   size.
+2. **GLX presentation:** Native Kbase allocations cannot be exported as DMA-BUFs,
+   so display targets are instead allocated from `/dev/dma_heap/system` and
+   imported into Kbase. At swap, the patched DRI software-presentation frontend
+   exports that imported buffer and hands it to Termux:X11 with DRI3 1.2
+   `PixmapFromBuffers` and Present. The reliable mode requests a server-side
+   copy and waits for Present's idle event before Panfork reuses the buffer.
+   `PAN_MALI_X11_DRI3=0` restores the older CPU readback/upload fallback.
 
 `LIBGL_ALWAYS_SOFTWARE=1` therefore has a misleading name here. It selects the
 DRI software *presentation frontend*, which this branch then hijacks to create
@@ -64,7 +78,20 @@ Android/Kbase winsys:
   software EGL device only for bookkeeping, and force-loads `panfrost_dri.so`.
 - `platform_x11.c`, `drisw.c`, `drisw_glx.c`, and the DRI target route the
   swrast loader into a real Panfrost `pipe_screen` when
-  `PAN_MALI_X11_SWRAST=1`, then CPU-copy frames into X11.
+  `PAN_MALI_X11_SWRAST=1`.
+- The swrast loader ABI has a private v7 callback that exports a Gallium display
+  target as a DMA-BUF and presents it with DRI3/Present. This deliberately
+  crosses the Gallium/GLX loader boundary.
+- Panfrost display targets use `/dev/dma_heap/system` when
+  `PAN_MALI_X11_DRI3=1`; Kbase imports those allocations through its existing
+  UMM path. The ordinary Kbase allocator remains the fallback for other
+  resources.
+- DMA-heap allocation is activated only when the loader advertises the private
+  callback. The EGL X11 loader remains on the CPU presenter instead of creating
+  an imported buffer it cannot present.
+- The normal DRI image extension gate assumes a DRM fd and disables DMA-BUF
+  import on `/dev/mali0`. `PAN_MALI_DMABUF_IMPORT=1` overrides that gate for
+  the standalone EGL/DRI3 verification probe.
 - Panfrost display targets are forced linear because the CPU presenter cannot
   interpret tiled layouts.
 - The Mali-G78 product ID (`0x9202`, `TBOx`) is added locally. AFBC is disabled
@@ -82,9 +109,10 @@ Android/Kbase winsys:
   software frontend.
 
 The result is useful as a research/prototyping driver, but the environment
-variable switches, fake software-device bookkeeping, full-frame CPU copies,
-device-specific quirks, and hard-coded aarch64 install layout all need proper
-design work before anything could be proposed upstream.
+variable switches, fake software-device bookkeeping, private loader ABI,
+single-buffer synchronized Present path, device-specific quirks, and hard-coded
+aarch64 install layout all need proper design work before anything could be
+proposed upstream.
 
 ## Build in Jammy
 
@@ -146,6 +174,13 @@ cc -O2 -Wall -Wextra \
   -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -lGL -lX11 -o glx-x11-triangle
+
+cc -O2 -Wall -Wextra \
+  -I/opt/panfork-tensor/include tensor-g1/panfork/egl-dmabuf-dri3.c \
+  -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
+  -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
+  -lEGL -lGLESv2 $(pkg-config --cflags --libs xcb xcb-dri3 xcb-present) \
+  -o egl-dmabuf-dri3
 ```
 
 ## Run
@@ -168,6 +203,17 @@ PAN_MESA_DEBUG=sync tensor-g1/panfork/run-panfrost-x11 ./glx-x11-bc3
 tensor-g1/panfork/run-panfrost-x11 your-application
 ```
 
+The standalone transport probe can be run with the same environment:
+
+```sh
+tensor-g1/panfork/run-panfrost-x11 ./egl-dmabuf-dri3
+```
+
+It renders into a DMA-heap buffer through Panfork, imports that buffer into
+Termux:X11 with DRI3, and prints `PASS`. `--readback` intentionally exercises a
+known-unsafe imported-buffer CPU cache-sync path and is not part of the normal
+test.
+
 The BC3 probe uploads one known opaque-red DXT5 block and reads its centre
 pixel back. The expected result is `pixel: 255 0 0 255`.
 
@@ -182,8 +228,9 @@ tensor-g1/panfork/run-panfrost-x11 glmark2 --validate
 ```
 
 The X11 wrapper sets `LIBGL_ALWAYS_SOFTWARE=1` only to select Mesa's software
-presentation frontend. The patched frontend opens `/dev/mali0` and creates a
-Panfrost renderer; `GL_RENDERER` must still report `Mali-G78 (Panfrost)`.
+presentation frontend. The patched frontend opens `/dev/mali0`, creates a
+Panfrost renderer, and uses the private DMA-BUF callback for presentation;
+`GL_RENDERER` must still report `Mali-G78 (Panfrost)`.
 
 For the currently safer diagnostic mode, serialise GPU work:
 
@@ -203,6 +250,8 @@ The important environment variables are:
 DISPLAY=:0
 PAN_MALI_DEV=/dev/mali0
 PAN_MALI_X11_SWRAST=1
+PAN_MALI_X11_DRI3=1
+PAN_MALI_DMABUF_IMPORT=1
 MESA_LOADER_DRIVER_OVERRIDE=panfrost
 LIBGL_ALWAYS_SOFTWARE=1
 LD_LIBRARY_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu
@@ -214,8 +263,13 @@ LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
 - Surfaceless EGL/GLES renders and reads back the expected pixel.
 - EGL/GLES creates a visible Termux:X11 window and reports OpenGL ES 3.1.
 - GLX creates a desktop OpenGL context and reports OpenGL 3.0.
-- Both window paths report `Mali-G78 (Panfrost)` and present through the
-  CPU-copy X11 bridge.
+- GLX reports `Mali-G78 (Panfrost)` while rendering directly into a DMA-heap
+  buffer imported by Kbase. The same DMA-BUF is accepted by Termux:X11 through
+  DRI3 1.2 and visibly presented by stock Jammy `glxgears`.
+- This DRI3 route removes Panfork's client-side framebuffer map/readback and
+  XImage/MIT-SHM upload. Termux:X11 currently performs the final Present copy;
+  its log reported that these copies were not GPU-offloaded on the tested
+  build.
 - A GLES2 triangle with a vertex-to-fragment color varying completes and reads
   back the expected pixel.
 - A GLX fixed-function triangle with depth, lighting, normals, and indexed
@@ -225,9 +279,12 @@ LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
   instrumented frames, including the formerly failing fully culled draw path.
   A final unmodified run measured about 151--172 FPS on the test Pixel 6a.
 - `glmark2` reports OpenGL 3.0 and `Mali-G78 (Panfrost)`. Its VBO build scene
-  measured 168 FPS at 300x300. Every scene for which glmark2 2021.02 ships a
-  validation reference passed; the advanced `ideas`, `jellyfish`, `terrain`,
-  `shadow`, and `refract` scenes also completed without a GPU fault.
+  measured 168 FPS at 300x300 on the older presenter. The DMA-BUF/DRI3 path
+  completed the same five-second scene at 640x480 with clean-exit results of
+  225--257 FPS (257 FPS in the final verification run). Every scene for which
+  glmark2 2021.02 ships a validation reference passed; the advanced `ideas`,
+  `jellyfish`, `terrain`, `shadow`, and `refract` scenes also completed without
+  a GPU fault.
 - A complete default fullscreen glmark2 run at the Termux:X11 display size
   (1080x2008) completed all 33 scenes with a score of 59. The 300x300 advanced
   smoke group scored 105.
@@ -262,8 +319,11 @@ LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
   SuperTuxKart without claiming native compressed-texture acceleration.
 - The asynchronous Job Manager path can still report atom event `0x58` during
   longer GLX workloads. Use `PAN_MESA_DEBUG=sync` when correctness matters.
-- Presentation is a full-frame CPU copy. It adds latency, consumes CPU and
-  memory bandwidth, and cannot match a dma-buf/direct-scanout path.
+- Reliable presentation still requests a full-frame copy inside Termux:X11.
+  The DRI3 path eliminates Panfork's client-side readback/upload, but the
+  tested X server did not GPU-offload its final copy. Strict no-copy Present
+  (`PAN_MALI_X11_DRI3_ZERO_COPY=1`) negotiates successfully but produces an
+  invisible window under the tested GNOME/Mutter session.
 - G78 AFBC is disabled; swap control is deferred; resizing, suspend/resume,
   multisampling, audio integration, input devices, long stability runs, and a
   complete desktop session remain incomplete.
