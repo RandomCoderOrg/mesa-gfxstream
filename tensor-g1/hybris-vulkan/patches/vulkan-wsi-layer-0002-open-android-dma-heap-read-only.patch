@@ -1,0 +1,33 @@
+From: Tensor G1 PRoot GPU experiment
+Subject: [PATCH] wsialloc: open Android DMA heaps read-only
+
+Android grants unprivileged applications read access to the public DMA heap
+character devices. Allocation is performed by DMA_HEAP_IOCTL_ALLOC; the access
+mode of the returned dma-buf is selected independently with fd_flags.
+
+Opening the heap O_RDWR fails with EACCES in a rootless Termux/PRoot process
+even though allocation from the heap is permitted. Match Android's
+libdmabufheap and open the heap O_RDONLY.
+
+---
+ util/wsialloc/wsialloc_dma_buf_heaps.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/util/wsialloc/wsialloc_dma_buf_heaps.c b/util/wsialloc/wsialloc_dma_buf_heaps.c
+index 5339166..f70a6fd 100644
+--- a/util/wsialloc/wsialloc_dma_buf_heaps.c
++++ b/util/wsialloc/wsialloc_dma_buf_heaps.c
+@@ -120,7 +120,10 @@ wsialloc_error wsialloc_new(wsialloc_allocator **allocator)
+       return WSIALLOC_ERROR_NO_RESOURCE;
+    }
+ 
+-   dma_buf_heaps->memory_fd = open("/dev/dma_heap/" STR(WSIALLOC_MEMORY_HEAP_NAME), O_RDWR);
++   /* Android exposes dma-heap character devices read-only to apps. The heap
++    * handle only receives DMA_HEAP_IOCTL_ALLOC; access for the returned
++    * dma-buf is selected separately through heap_data.fd_flags above. */
++   dma_buf_heaps->memory_fd = open("/dev/dma_heap/" STR(WSIALLOC_MEMORY_HEAP_NAME), O_RDONLY | O_CLOEXEC);
+    dma_buf_heaps->protected_fd = -1;
+ 
+    if (dma_buf_heaps->memory_fd < 0)
+-- 
+2.50.1

@@ -1,0 +1,28 @@
+From: Tensor G1 PRoot GPU experiment
+Subject: [PATCH] cmake: link external-memory sources into X11 WSI
+
+The X11 DMA-BUF image factory references the external-memory extension and
+backing implementation, but the X11 source list does not compile them. Add the
+two required sources to the shared WSI layer build.
+
+---
+ CMakeLists.txt | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1679c18..cd5fb31 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -305,7 +305,9 @@ if(BUILD_WSI_X11)
+       wsi/x11/surface.cpp
+       wsi/x11/swapchain.cpp
+       wsi/x11/shm_presenter.cpp
+-      wsi/x11/dri3_presenter.cpp)
++      wsi/x11/dri3_presenter.cpp
++      wsi/extensions/external_memory_extension.cpp
++      wsi/image_backing_memory_external.cpp)
+ 
+    pkg_check_modules(LIBDRM REQUIRED libdrm)
+ 
+-- 
+2.50.1

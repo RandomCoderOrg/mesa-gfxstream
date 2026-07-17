@@ -1,0 +1,48 @@
+#!/bin/bash
+set -euo pipefail
+
+root=${TENSOR_VK_ROOT:-/root/hybris-rootless}
+hybris_build="$root/src/libhybris-upstream/hybris"
+sysvk="$root/src/sysvk"
+layer_dir=${TENSOR_VK_LAYER_DIR:-/usr/share/vulkan/implicit_layer.d}
+
+export LD_LIBRARY_PATH="$sysvk:$hybris_build/hardware/.libs:$hybris_build/common/.libs:$layer_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export HYBRIS_LINKER_DIR="$hybris_build/common/q/.libs"
+export HYBRIS_LD_LIBRARY_PATH=${HYBRIS_LD_LIBRARY_PATH:-'/root/hybris-rootless/android-bionic:/system/lib64:/system_ext/lib64:/product/lib64:/vendor/lib64:/vendor/lib64/egl:/vendor/lib64/hw:/odm/lib64:/apex/com.android.runtime/lib64/bionic'}
+export HYBRIS_LD_DEBUG=${HYBRIS_LD_DEBUG:--1}
+export HYBRIS_PTHREAD_RAW_EXIT=1
+export VK_DRIVER_FILES="$sysvk/sysvk_upstream_nodelete_icd.json"
+export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+export DISPLAY=${DISPLAY:-:0}
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/hybris-runtime}
+
+unset VK_LAYER_PATH VK_IMPLICIT_LAYER_PATH VK_INSTANCE_LAYERS
+unset WSI_X11_FORCE_SHM WSI_X11_DRI3_COPY
+
+case "${TENSOR_VK_WSI_MODE:-copy}" in
+  copy)
+    # Best practical Termux:X11 mode: DMA-BUF import plus a server-side GPU blit.
+    export WSI_X11_DRI3_COPY=1
+    ;;
+  zero)
+    # True zero-copy, but PresentIdleNotify pacing can be slower on Termux:X11.
+    ;;
+  shm)
+    # Compatibility fallback. This performs a full GPU-to-CPU-to-X copy.
+    export WSI_X11_FORCE_SHM=1
+    ;;
+  *)
+    echo "TENSOR_VK_WSI_MODE must be copy, zero, or shm" >&2
+    exit 2
+    ;;
+esac
+
+if test "${TENSOR_VK_ALLOW_NON_FIFO:-1}" = 1; then
+  export WSI_ALLOW_NON_FIFO_PRESENT_MODE=1
+else
+  unset WSI_ALLOW_NON_FIFO_PRESENT_MODE
+fi
+
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+exec "$@"

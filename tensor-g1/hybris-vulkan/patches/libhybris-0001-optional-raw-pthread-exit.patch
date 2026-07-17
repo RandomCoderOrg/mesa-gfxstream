@@ -1,0 +1,78 @@
+From: Tensor G1 PRoot GPU experiment
+Subject: [PATCH] hooks: add opt-in raw exit for Android vendor threads
+
+Some recent Android vendor threads write Bionic TLS slots that overlap glibc's
+private per-thread state. Returning through glibc's start_thread then crashes
+in __libc_thread_freeres. Add an opt-in wrapper which exits the Linux thread
+without running the incompatible glibc cleanup path.
+
+This is intentionally guarded by HYBRIS_PTHREAD_RAW_EXIT. It is a vendor-driver
+compatibility workaround and must not become a generic libhybris default.
+
+---
+ hybris/common/hooks.c | 40 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 39 insertions(+), 1 deletion(-)
+
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index 67bbf31..01d32d8 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -418,17 +418,55 @@ static pid_t _hybris_hook_gettid(void)
+  *
+  * */
+ 
++struct hybris_pthread_start {
++    void *(*start_routine)(void *);
++    void *arg;
++};
++
++static void *_hybris_pthread_start_wrapper(void *opaque)
++{
++    struct hybris_pthread_start start = *(struct hybris_pthread_start *) opaque;
++    free(opaque);
++
++    void *result = start.start_routine(start.arg);
++
++    /*
++     * Some recent Android vendor threads write Bionic TLS slots that overlap
++     * Glibc's private per-thread state.  Returning through Glibc's start_thread
++     * then crashes in __libc_thread_freeres.  The opt-in raw exit deliberately
++     * skips that incompatible cleanup.  It is a rootless vendor-driver quirk,
++     * not suitable as a generic libhybris default.
++     */
++    if (getenv("HYBRIS_PTHREAD_RAW_EXIT")) {
++        syscall(__NR_exit, 0);
++        __builtin_unreachable();
++    }
++
++    return result;
++}
++
+ static int _hybris_hook_pthread_create(pthread_t *thread, const pthread_attr_t *__attr,
+                              void *(*start_routine)(void*), void *arg)
+ {
+     pthread_attr_t *realattr = NULL;
++    struct hybris_pthread_start *start;
+ 
+     TRACE_HOOK("thread %p attr %p", thread, __attr);
+ 
+     if (__attr != NULL)
+         realattr = (pthread_attr_t *) *(uintptr_t *) __attr;
+ 
+-    return pthread_create(thread, realattr, start_routine, arg);
++    start = malloc(sizeof(*start));
++    if (start == NULL)
++        return ENOMEM;
++    start->start_routine = start_routine;
++    start->arg = arg;
++
++    int result = pthread_create(thread, realattr,
++                                _hybris_pthread_start_wrapper, start);
++    if (result != 0)
++        free(start);
++    return result;
+ }
+ 
+ static int _hybris_hook_pthread_kill(pthread_t thread, int sig)
+-- 
+2.50.1
