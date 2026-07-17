@@ -54,6 +54,7 @@ struct dri_drawable
 
    struct pipe_resource *textures[ST_ATTACHMENT_COUNT];
    struct pipe_resource *msaa_textures[ST_ATTACHMENT_COUNT];
+   struct pipe_resource *dmabuf_present_textures[3];
    unsigned int texture_mask, texture_stamp;
    int swap_interval;
 

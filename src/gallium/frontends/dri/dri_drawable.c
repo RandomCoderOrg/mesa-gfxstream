@@ -193,6 +193,8 @@ dri_destroy_drawable(struct dri_drawable *drawable)
       pipe_resource_reference(&drawable->textures[i], NULL);
    for (i = 0; i < ST_ATTACHMENT_COUNT; i++)
       pipe_resource_reference(&drawable->msaa_textures[i], NULL);
+   for (i = 0; i < ARRAY_SIZE(drawable->dmabuf_present_textures); i++)
+      pipe_resource_reference(&drawable->dmabuf_present_textures[i], NULL);
 
    screen->base.screen->fence_reference(screen->base.screen,
          &drawable->throttle_fence, NULL);

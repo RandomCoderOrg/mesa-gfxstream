@@ -18,8 +18,10 @@ Vulkan integration is documented in
 Tested on a Pixel 6a from a uDroid Ubuntu 22.04 (Jammy) proot. Rendering is
 performed by Panfrost. The current GLX window path allocates linear display
 targets from Android's DMA heap, imports them into Kbase, and presents the same
-DMA-BUF to Termux:X11 through DRI3. EGL keeps the older CPU presenter until its
-loader gains the same private callback. VirGL and ANGLE are not used.
+DMA-BUF to Termux:X11 through a three-slot DRI3 Present queue. Released buffers
+are rotated back into Mesa instead of being allocated and imported again. EGL
+keeps the older CPU presenter until its loader gains the same private callback.
+VirGL and ANGLE are not used.
 
 ## Proof of hardware rendering
 
@@ -45,8 +47,10 @@ flowchart LR
     HEAP["Android system DMA heap"] -->|"allocate linear display target"| BUF["DMA-BUF"]
     GLX --> PAN["Panfork / Panfrost"]
     PAN -->|"Kbase UMM import and GPU render"| BUF
-    BUF -->|"export fd at swap"| GLX
-    GLX -->|"DRI3 PixmapFromBuffers"| X11["Termux:X11 Present"]
+    BUF -->|"export fd at swap"| QUEUE["Three-slot DRI3 Present queue"]
+    QUEUE -->|"PixmapFromBuffers + Present"| X11["Termux:X11 Present"]
+    X11 -->|"IdleNotify releases slot"| QUEUE
+    QUEUE -->|"rotate released buffer"| GLX
     X11 -->|"reliable server-side copy"| SURFACE["Android display surface"]
 ```
 
@@ -61,7 +65,8 @@ There are two separate paths:
    imported into Kbase. At swap, the patched DRI software-presentation frontend
    exports that imported buffer and hands it to Termux:X11 with DRI3 1.2
    `PixmapFromBuffers` and Present. The reliable mode requests a server-side
-   copy and waits for Present's idle event before Panfork reuses the buffer.
+   copy, allows up to three pixmaps to remain in flight, and rotates a backing
+   resource into the next frame only after Present reports it idle.
    `PAN_MALI_X11_DRI3=0` restores the older CPU readback/upload fallback.
 
 `LIBGL_ALWAYS_SOFTWARE=1` therefore has a misleading name here. It selects the
@@ -80,8 +85,10 @@ Android/Kbase winsys:
   swrast loader into a real Panfrost `pipe_screen` when
   `PAN_MALI_X11_SWRAST=1`.
 - The swrast loader ABI has a private v7 callback that exports a Gallium display
-  target as a DMA-BUF and presents it with DRI3/Present. This deliberately
-  crosses the Gallium/GLX loader boundary.
+  target as a DMA-BUF and presents it with DRI3/Present. It also reports the
+  assigned Present slot and released-slot mask so Gallium can maintain a small
+  reusable resource pool. This deliberately crosses the Gallium/GLX loader
+  boundary.
 - Panfrost display targets use `/dev/dma_heap/system` when
   `PAN_MALI_X11_DRI3=1`; Kbase imports those allocations through its existing
   UMM path. The ordinary Kbase allocator remains the fallback for other
@@ -110,9 +117,9 @@ Android/Kbase winsys:
 
 The result is useful as a research/prototyping driver, but the environment
 variable switches, fake software-device bookkeeping, private loader ABI,
-single-buffer synchronized Present path, device-specific quirks, and hard-coded
-aarch64 install layout all need proper design work before anything could be
-proposed upstream.
+fixed-size Present queue, device-specific quirks, and hard-coded aarch64
+install layout all need proper design work before anything could be proposed
+upstream.
 
 ## Build in Jammy
 
@@ -269,7 +276,9 @@ LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
 - This DRI3 route removes Panfork's client-side framebuffer map/readback and
   XImage/MIT-SHM upload. Termux:X11 currently performs the final Present copy;
   its log reported that these copies were not GPU-offloaded on the tested
-  build.
+  build. GLX now pipelines three Present pixmaps and recycles their DMA-heap
+  resources only after `IdleNotify`, avoiding per-frame DMA-heap allocation and
+  Kbase import.
 - A GLES2 triangle with a vertex-to-fragment color varying completes and reads
   back the expected pixel.
 - A GLX fixed-function triangle with depth, lighting, normals, and indexed
@@ -277,12 +286,16 @@ LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
 - Stock Jammy `glxgears` renders visibly without the intermittent white gear
   sectors. Pre-swap GPU readback found zero near-white pixels in 40 consecutive
   instrumented frames, including the formerly failing fully culled draw path.
-  A final unmodified run measured about 151--172 FPS on the test Pixel 6a.
+  A 20-second 640x480 run with the pipelined presenter measured about 236--274
+  FPS on the test Pixel 6a.
 - `glmark2` reports OpenGL 3.0 and `Mali-G78 (Panfrost)`. Its VBO build scene
   measured 168 FPS at 300x300 on the older presenter. The DMA-BUF/DRI3 path
   completed the same five-second scene at 640x480 with clean-exit results of
-  225--257 FPS (257 FPS in the final verification run). Every scene for which
-  glmark2 2021.02 ships a validation reference passed; the advanced `ideas`,
+  225--257 FPS using the original wait-per-frame presenter. The pooled
+  three-slot queue reached 269 FPS in a standalone run; a build, texture,
+  Gouraud-shading, and high-poly-bump transition group completed at 293, 277,
+  273, and 228 FPS respectively, scoring 267. Every scene for which glmark2
+  2021.02 ships a validation reference passed; the advanced `ideas`,
   `jellyfish`, `terrain`, `shadow`, and `refract` scenes also completed without
   a GPU fault.
 - A complete default fullscreen glmark2 run at the Termux:X11 display size

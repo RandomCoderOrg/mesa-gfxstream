@@ -130,6 +130,10 @@ XDestroyDrawable(struct drisw_drawable * pdp, Display * dpy, XID drawable)
    if (pdp->present_special_event) {
       xcb_connection_t *conn = XGetXCBConnection(dpy);
 
+      for (unsigned i = 0; i < ARRAY_SIZE(pdp->present_pixmaps); ++i) {
+         if (pdp->present_pixmaps[i] != XCB_NONE)
+            xcb_free_pixmap(conn, pdp->present_pixmaps[i]);
+      }
       xcb_unregister_for_special_event(conn, pdp->present_special_event);
       pdp->present_special_event = NULL;
    }
@@ -141,6 +145,39 @@ XDestroyDrawable(struct drisw_drawable * pdp, Display * dpy, XID drawable)
       XShmDetach(dpy, &pdp->shminfo);
 
    XFreeGC(dpy, pdp->gc);
+}
+
+static bool
+swrastReapPresentEvent(struct drisw_drawable *pdp, xcb_connection_t *conn,
+                       bool block, unsigned *released_mask)
+{
+   for (;;) {
+      xcb_generic_event_t *event = block ?
+         xcb_wait_for_special_event(conn, pdp->present_special_event) :
+         xcb_poll_for_special_event(conn, pdp->present_special_event);
+
+      if (!event)
+         return false;
+
+      xcb_present_generic_event_t *generic = (void *)event;
+      if (generic->evtype == XCB_PRESENT_EVENT_IDLE_NOTIFY) {
+         xcb_pixmap_t pixmap =
+            ((xcb_present_idle_notify_event_t *)event)->pixmap;
+
+         for (unsigned i = 0; i < ARRAY_SIZE(pdp->present_pixmaps); ++i) {
+            if (pdp->present_pixmaps[i] == pixmap) {
+               xcb_free_pixmap(conn, pixmap);
+               pdp->present_pixmaps[i] = XCB_NONE;
+               pdp->present_in_flight--;
+               *released_mask |= BITFIELD_BIT(i);
+               free(event);
+               return true;
+            }
+         }
+      }
+
+      free(event);
+   }
 }
 
 /**
@@ -283,7 +320,8 @@ swrastPutImage(__DRIdrawable * draw, int op,
 
 static unsigned char
 swrastPutImageDmaBuf(__DRIdrawable *draw, int fd, int w, int h,
-                     int stride, uint64_t modifier, void *loaderPrivate)
+                     int stride, uint64_t modifier, unsigned *out_slot,
+                     unsigned *released_mask, void *loaderPrivate)
 {
    struct drisw_drawable *pdp = loaderPrivate;
    const char *enabled = getenv("PAN_MALI_X11_DRI3");
@@ -292,12 +330,14 @@ swrastPutImageDmaBuf(__DRIdrawable *draw, int fd, int w, int h,
    xcb_pixmap_t pixmap;
    xcb_void_cookie_t cookie;
    xcb_generic_error_t *error;
-   xcb_generic_event_t *event;
    uint32_t serial;
+   unsigned slot;
    int x_fd;
 
    if (!pdp || !enabled || !strcmp(enabled, "0") || fd < 0)
       return GL_FALSE;
+
+   *released_mask = 0;
 
    conn = XGetXCBConnection(pdp->base.psc->dpy);
    if (!conn || xcb_connection_has_error(conn))
@@ -321,57 +361,75 @@ swrastPutImageDmaBuf(__DRIdrawable *draw, int fd, int w, int h,
          return GL_FALSE;
    }
 
+   while (swrastReapPresentEvent(pdp, conn, false, released_mask))
+      ;
+   while (pdp->present_in_flight == ARRAY_SIZE(pdp->present_pixmaps)) {
+      if (!swrastReapPresentEvent(pdp, conn, true, released_mask))
+         return GL_FALSE;
+   }
+
+   for (slot = 0; slot < ARRAY_SIZE(pdp->present_pixmaps); ++slot) {
+      if (pdp->present_pixmaps[slot] == XCB_NONE)
+         break;
+   }
+   if (slot == ARRAY_SIZE(pdp->present_pixmaps))
+      return GL_FALSE;
+
    x_fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
    if (x_fd < 0)
       return GL_FALSE;
 
    XFlush(pdp->base.psc->dpy);
    pixmap = xcb_generate_id(conn);
-   cookie = xcb_dri3_pixmap_from_buffers_checked(
-      conn, pixmap, pdp->base.xDrawable, 1, w, h,
-      stride, 0, 0, 0, 0, 0, 0, 0,
-      pdp->xDepth, 32, modifier, &x_fd);
-   error = xcb_request_check(conn, cookie);
-   if (error) {
-      free(error);
-      return GL_FALSE;
+   if (!pdp->present_validated) {
+      cookie = xcb_dri3_pixmap_from_buffers_checked(
+         conn, pixmap, pdp->base.xDrawable, 1, w, h,
+         stride, 0, 0, 0, 0, 0, 0, 0,
+         pdp->xDepth, 32, modifier, &x_fd);
+      error = xcb_request_check(conn, cookie);
+      if (error) {
+         free(error);
+         return GL_FALSE;
+      }
+   } else {
+      xcb_dri3_pixmap_from_buffers(
+         conn, pixmap, pdp->base.xDrawable, 1, w, h,
+         stride, 0, 0, 0, 0, 0, 0, 0,
+         pdp->xDepth, 32, modifier, &x_fd);
    }
 
    serial = ++pdp->present_serial;
-   cookie = xcb_present_pixmap_checked(
-      conn, pdp->base.xDrawable, pixmap, serial,
-      XCB_NONE, XCB_NONE, 0, 0,
-      XCB_NONE, XCB_NONE, XCB_NONE,
-      XCB_PRESENT_OPTION_ASYNC |
-         ((zero_copy && strcmp(zero_copy, "0")) ?
-             XCB_PRESENT_OPTION_NONE : XCB_PRESENT_OPTION_COPY),
-      0, 0, 0, 0, NULL);
-   error = xcb_request_check(conn, cookie);
-   if (error) {
-      free(error);
-      xcb_free_pixmap(conn, pixmap);
-      xcb_flush(conn);
-      return GL_FALSE;
-   }
+   uint32_t options = XCB_PRESENT_OPTION_ASYNC |
+      ((zero_copy && strcmp(zero_copy, "0")) ?
+          XCB_PRESENT_OPTION_NONE : XCB_PRESENT_OPTION_COPY);
 
-   do {
-      event = xcb_wait_for_special_event(conn, pdp->present_special_event);
-      if (!event) {
+   pdp->present_pixmaps[slot] = pixmap;
+   pdp->present_in_flight++;
+   if (!pdp->present_validated) {
+      cookie = xcb_present_pixmap_checked(
+         conn, pdp->base.xDrawable, pixmap, serial,
+         XCB_NONE, XCB_NONE, 0, 0,
+         XCB_NONE, XCB_NONE, XCB_NONE, options,
+         0, 0, 0, 0, NULL);
+      error = xcb_request_check(conn, cookie);
+      if (error) {
+         free(error);
+         pdp->present_pixmaps[slot] = XCB_NONE;
+         pdp->present_in_flight--;
          xcb_free_pixmap(conn, pixmap);
          xcb_flush(conn);
          return GL_FALSE;
       }
-
-      xcb_present_generic_event_t *generic = (void *)event;
-      bool idle = generic->evtype == XCB_PRESENT_EVENT_IDLE_NOTIFY &&
-                  ((xcb_present_idle_notify_event_t *)event)->pixmap == pixmap;
-      free(event);
-      if (idle)
-         break;
-   } while (true);
-
-   xcb_free_pixmap(conn, pixmap);
+      pdp->present_validated = true;
+   } else {
+      xcb_present_pixmap(
+         conn, pdp->base.xDrawable, pixmap, serial,
+         XCB_NONE, XCB_NONE, 0, 0,
+         XCB_NONE, XCB_NONE, XCB_NONE, options,
+         0, 0, 0, 0, NULL);
+   }
    xcb_flush(conn);
+   *out_slot = slot;
    return GL_TRUE;
 }
 

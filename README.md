@@ -30,8 +30,9 @@ README.rst                        original Mesa/Panfork project README
 
 The open-source Panfork path reports `Mali-G78 (Panfrost)` and runs EGL, GLX,
 glxgears, glmark2, GNOME, and SuperTuxKart. Its rootless DRI3 path removes the
-old per-frame client readback/upload, while Termux:X11 still performs the
-final server-side copy. Known limitations are documented in
+old per-frame client readback/upload; a three-slot Present queue recycles
+DMA-heap buffers after the X server releases them. Termux:X11 still performs
+the final server-side copy. Known limitations are documented in
 [`tensor-g1/README.md`](tensor-g1/README.md).
 
 The proprietary Vulkan path reports the real Mali-G78 r54p3 driver with Vulkan

@@ -223,7 +223,8 @@ drisw_copy_to_front(struct pipe_context *pipe,
 
 static bool
 drisw_present_dmabuf(struct dri_drawable *drawable,
-                     struct pipe_resource *ptex)
+                     struct pipe_resource *ptex,
+                     unsigned *slot, unsigned *released_mask)
 {
    const __DRIswrastLoaderExtension *loader = drawable->screen->swrast_loader;
    struct winsys_handle whandle = {
@@ -243,6 +244,7 @@ drisw_present_dmabuf(struct dri_drawable *drawable,
                                       whandle.handle,
                                       ptex->width0, ptex->height0,
                                       whandle.stride, whandle.modifier,
+                                      slot, released_mask,
                                       drawable->loaderPrivate);
    close(whandle.handle);
    return presented;
@@ -290,7 +292,34 @@ drisw_swap_buffers(struct dri_drawable *drawable)
       screen->base.screen->fence_finish(screen->base.screen, ctx->st->pipe,
                                         fence, PIPE_TIMEOUT_INFINITE);
       screen->base.screen->fence_reference(screen->base.screen, &fence, NULL);
-      if (drisw_present_dmabuf(drawable, ptex)) {
+      unsigned present_slot = 0;
+      unsigned released_mask = 0;
+
+      if (drisw_present_dmabuf(drawable, ptex, &present_slot,
+                               &released_mask)) {
+         struct pipe_resource *next = NULL;
+
+         for (unsigned i = 0;
+              i < ARRAY_SIZE(drawable->dmabuf_present_textures); ++i) {
+            if (!(released_mask & BITFIELD_BIT(i)))
+               continue;
+
+            struct pipe_resource *candidate =
+               drawable->dmabuf_present_textures[i];
+            if (!next && candidate &&
+                candidate->width0 == ptex->width0 &&
+                candidate->height0 == ptex->height0 &&
+                candidate->format == ptex->format)
+               pipe_resource_reference(&next, candidate);
+            pipe_resource_reference(
+               &drawable->dmabuf_present_textures[i], NULL);
+         }
+
+         pipe_resource_reference(
+            &drawable->dmabuf_present_textures[present_slot], ptex);
+         pipe_resource_reference(
+            &drawable->textures[ST_ATTACHMENT_BACK_LEFT], next);
+         pipe_resource_reference(&next, NULL);
          drisw_invalidate_drawable(drawable);
       } else {
          const char *dmabuf = getenv("PAN_MALI_X11_DRI3_ACTIVE");

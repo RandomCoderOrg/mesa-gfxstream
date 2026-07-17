@@ -664,6 +664,8 @@ struct __DRIswrastLoaderExtensionRec {
     unsigned char (*putImageDmaBuf)(__DRIdrawable *drawable,
                                     int fd, int width, int height,
                                     int stride, uint64_t modifier,
+                                    unsigned int *slot,
+                                    unsigned int *released_mask,
                                     void *loaderPrivate);
 };
 

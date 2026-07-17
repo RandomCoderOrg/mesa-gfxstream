@@ -74,6 +74,9 @@ struct drisw_drawable
    xcb_special_event_t *present_special_event;
    uint32_t present_serial;
    uint32_t present_stamp;
+   xcb_pixmap_t present_pixmaps[3];
+   unsigned present_in_flight;
+   bool present_validated;
 };
 
 _X_HIDDEN int
