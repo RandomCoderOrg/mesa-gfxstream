@@ -1,0 +1,38 @@
+From: Tensor G1 proot GPU project
+Subject: [PATCH 5/5] util: retain the Android memfd syscall fallback
+
+The wrapper deliberately disables DETECT_OS_ANDROID to reach Mesa's X11 WSI.
+Native Meson feature tests can still detect the running Android libc's
+memfd_create symbol even when the compiler targets an older minimum API whose
+headers hide its declaration. Key the existing syscall path from __ANDROID__
+so the source remains valid independently of the configured API level.
+
+diff --git a/src/util/anon_file.c b/src/util/anon_file.c
+index bc674c4..5107fa6 100644
+--- a/src/util/anon_file.c
++++ b/src/util/anon_file.c
+@@ -37,7 +37,10 @@
+ #include <errno.h>
+ #include <stdlib.h>
+ 
+-#if defined(HAVE_MEMFD_CREATE) || defined(__FreeBSD__) || defined(__OpenBSD__)
++#if defined(__ANDROID__)
++#include <sys/syscall.h>
++#include <linux/memfd.h>
++#elif defined(HAVE_MEMFD_CREATE) || defined(__FreeBSD__) || defined(__OpenBSD__)
+ #include <sys/mman.h>
+ #elif DETECT_OS_ANDROID
+ #include <sys/syscall.h>
+@@ -117,7 +120,11 @@ int
+ os_create_anonymous_file(int64_t size, const char *debug_name)
+ {
+    int fd, ret;
+-#if defined(HAVE_MEMFD_CREATE)
++#if defined(__ANDROID__)
++   if (!debug_name)
++      debug_name = "mesa-shared";
++   fd = syscall(SYS_memfd_create, debug_name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
++#elif defined(HAVE_MEMFD_CREATE)
+    if (!debug_name)
+       debug_name = "mesa-shared";
+    fd = memfd_create(debug_name, MFD_CLOEXEC | MFD_ALLOW_SEALING);

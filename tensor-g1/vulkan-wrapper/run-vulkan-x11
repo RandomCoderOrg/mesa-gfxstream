@@ -1,0 +1,25 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -eu
+
+TERMUX_HOME=${TERMUX_HOME:-/data/data/com.termux/files/home}
+TERMUX_PREFIX=${TERMUX_PREFIX:-/data/data/com.termux/files/usr}
+WRAPPER_PREFIX=${VULKAN_WRAPPER_PREFIX:-"$TERMUX_HOME/.local/opt/tensor-g1-vulkan-wrapper"}
+ICD="$WRAPPER_PREFIX/share/vulkan/icd.d/wrapper_icd.aarch64.json"
+
+if [ "$#" -eq 0 ]; then
+    echo "usage: $0 COMMAND [ARG ...]" >&2
+    exit 2
+fi
+
+if [ ! -f "$ICD" ]; then
+    echo "Wrapper ICD not found: $ICD" >&2
+    echo "Run build-termux.sh or set VULKAN_WRAPPER_PREFIX." >&2
+    exit 1
+fi
+
+export DISPLAY="${DISPLAY:-:0}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-"$TERMUX_PREFIX/tmp"}"
+export VK_DRIVER_FILES="$ICD"
+export LD_LIBRARY_PATH="$WRAPPER_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+exec "$@"

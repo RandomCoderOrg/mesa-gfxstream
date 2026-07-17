@@ -1,0 +1,18 @@
+From: xMeM <haooy@outlook.com>
+Subject: [PATCH 2/5] util: fall back to the Termux temporary directory
+
+diff --git a/src/util/anon_file.c b/src/util/anon_file.c
+--- a/src/util/anon_file.c
++++ b/src/util/anon_file.c
+@@ -136,6 +136,11 @@ os_create_anonymous_file(int64_t size, const char *debug_name)
+    char *name;
+ 
+    path = getenv("XDG_RUNTIME_DIR");
++#ifdef __TERMUX__
++   if (!path) {
++      path = "@TERMUX_PREFIX@/tmp";
++   }
++#endif
+    if (!path) {
+       errno = ENOENT;
+       return -1;

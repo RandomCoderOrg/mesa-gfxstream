@@ -4,3 +4,4 @@
 *.png binary
 *.gif binary
 *.ico binary
+*.patch whitespace=-blank-at-eol
