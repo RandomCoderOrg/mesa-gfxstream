@@ -126,6 +126,12 @@ cc -O2 -Wall -Wextra \
   -lGL -lX11 -o glx-x11-smoke
 
 cc -O2 -Wall -Wextra \
+  -I/opt/panfork-tensor/include tensor-g1/glx-x11-bc3.c \
+  -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
+  -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
+  -lGL -lX11 -o glx-x11-bc3
+
+cc -O2 -Wall -Wextra \
   -I/opt/panfork-tensor/include tensor-g1/egl-x11-triangle.c \
   -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
@@ -154,8 +160,12 @@ tensor-g1/run-panfrost-x11 ./egl-x11-smoke
 tensor-g1/run-panfrost-x11 ./glx-x11-smoke
 tensor-g1/run-panfrost-x11 ./egl-x11-triangle
 tensor-g1/run-panfrost-x11 ./glx-x11-triangle
+PAN_MESA_DEBUG=sync tensor-g1/run-panfrost-x11 ./glx-x11-bc3
 tensor-g1/run-panfrost-x11 your-application
 ```
+
+The BC3 probe uploads one known opaque-red DXT5 block and reads its centre
+pixel back. The expected result is `pixel: 255 0 0 255`.
 
 For the current desktop-GL smoke targets:
 
@@ -217,6 +227,13 @@ LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
 - A complete default fullscreen glmark2 run at the Termux:X11 display size
   (1080x2008) completed all 33 scenes with a score of 59. The 300x300 advanced
   smoke group scored 105.
+- SuperTuxKart 1.3 renders the tutorial track correctly with its normal HD and
+  texture-compression options enabled. Tensor G1's raw GPU properties claim
+  BCn support, but a known-good BC3 block samples as opaque black when passed
+  to the G78 texture unit. The driver therefore rejects native S3TC for this
+  GPU ID; Mesa's state tracker decompresses BC textures once during upload and
+  Panfrost samples the resulting RGBA textures in hardware. The dedicated BC3
+  probe reads back the expected opaque red pixel after this fallback.
 - Khronos VK-GL-CTS 3.2.8.0 targeted smoke groups passed 95/95 cases: 44
   GLES3, 41 GLES2, and 10 EGL. This is deliberately small coverage, not a
   conformance claim.
@@ -235,13 +252,10 @@ LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
 
 ## Known failures and limitations
 
-- **SuperTuxKart 1.3 is not rendered correctly.** It starts, identifies
-  `OpenGL ES 3.1` and `Mali-G78 (Panfrost)`, compiles its shaders, and renders
-  sky/UI/headlights. Most track and kart surfaces are nevertheless black.
-  Disabling dynamic lights, IBL, shadows, SSAO, bloom, glow, depth of field,
-  motion blur, and other post-effects does not fix it. That makes a single
-  deferred-lighting effect unlikely; complex material multi-texture/sampler,
-  UBO, or varying state remains suspect. No exact root cause is claimed yet.
+- S3TC/BCn is not sampled natively on this Tensor G1 path. Mesa preserves the
+  GL extensions through its software upload fallback, but decompressed RGBA
+  textures use more memory and bandwidth than BCn. This fixes correctness for
+  SuperTuxKart without claiming native compressed-texture acceleration.
 - The asynchronous Job Manager path can still report atom event `0x58` during
   longer GLX workloads. Use `PAN_MESA_DEBUG=sync` when correctness matters.
 - Presentation is a full-frame CPU copy. It adds latency, consumes CPU and

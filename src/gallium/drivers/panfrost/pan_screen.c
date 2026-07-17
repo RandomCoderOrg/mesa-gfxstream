@@ -587,12 +587,53 @@ panfrost_is_format_supported( struct pipe_screen *screen,
 
         struct panfrost_format fmt = dev->formats[format];
 
+        /* Tensor G1 reports BCn feature bits, but known-good blocks sample as
+         * opaque black. ARM's Android driver also omits the S3TC extensions.
+         * Keep the workaround local to this experimental G78 port so Mesa
+         * falls back to ordinary RGBA textures.
+         */
+        if (dev->gpu_id == 0x9202 && util_format_is_s3tc(format))
+                return false;
+
         /* Also check that compressed texture formats are supported on this
          * particular chip. They may not be depending on system integration
          * differences. */
 
+        unsigned compressed_format = MALI_EXTRACT_INDEX(fmt.hw);
+
+        /* On Valhall the texture descriptor contains the uncompressed
+         * interchange format while the plane descriptor selects the block
+         * compression format.  Looking at fmt.hw therefore mistakes every
+         * S3TC format for plain RGBA and advertises it even when the GPU's
+         * TEXTURE_FEATURES register says that BCn is unavailable.
+         *
+         * Newer Mesa keeps this feature bit separately in the format table.
+         * Keep this old fork's data structures intact and recover the S3TC
+         * feature bit here, which is the path needed by SuperTuxKart.
+         */
+        if (dev->arch >= 9 && util_format_is_s3tc(format)) {
+                switch (format) {
+                case PIPE_FORMAT_DXT1_RGB:
+                case PIPE_FORMAT_DXT1_RGBA:
+                case PIPE_FORMAT_DXT1_SRGB:
+                case PIPE_FORMAT_DXT1_SRGBA:
+                        compressed_format = MALI_BC1_UNORM;
+                        break;
+                case PIPE_FORMAT_DXT3_RGBA:
+                case PIPE_FORMAT_DXT3_SRGBA:
+                        compressed_format = MALI_BC2_UNORM;
+                        break;
+                case PIPE_FORMAT_DXT5_RGBA:
+                case PIPE_FORMAT_DXT5_SRGBA:
+                        compressed_format = MALI_BC3_UNORM;
+                        break;
+                default:
+                        unreachable("Invalid S3TC format");
+                }
+        }
+
         bool supported = panfrost_supports_compressed_format(dev,
-                        MALI_EXTRACT_INDEX(fmt.hw));
+                                                              compressed_format);
 
         if (!supported)
                 return false;
