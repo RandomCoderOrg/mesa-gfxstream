@@ -272,6 +272,15 @@ serve_client(int fd)
          continue;
       }
 
+      if (message.type == TMC_DRAIN) {
+         free(payload);
+         if (!drain_output(fd, codec, 100000, 0) ||
+             !send_message(fd, TMC_ACK, message.pts_us, 0, 0, 0, 0, 0,
+                           NULL, 0))
+            break;
+         continue;
+      }
+
       free(payload);
       if (message.type == TMC_INPUT_EOS) {
          if (!queue_input(codec, NULL, 0, message.pts_us,

@@ -252,7 +252,7 @@ surfaceless_probe_mali(_EGLDisplay *disp)
     * distinct EGL bookkeeping device so clients do not misclassify the real
     * Panfrost renderer through EGL_MESA_device_software.
     */
-   disp->Device = _eglAddKbaseDevice();
+   disp->Device = _eglAddKbaseDevice(device);
    dri2_dpy->driver_name = strdup("panfrost");
 
    /* This Panfork Gallium target exposes the swrast-loader ABI (the same ABI

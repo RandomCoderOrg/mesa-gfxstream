@@ -11,6 +11,8 @@ enum tmc_message_type {
    TMC_CONFIG = 1,
    TMC_PACKET = 2,
    TMC_INPUT_EOS = 3,
+   /* Drain currently available output without ending the decoder session. */
+   TMC_DRAIN = 4,
    TMC_READY = 101,
    TMC_FORMAT = 102,
    TMC_FRAME = 103,

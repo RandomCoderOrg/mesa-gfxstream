@@ -28,6 +28,7 @@
 #ifdef HAVE_LIBDRM
 #include <xf86drm.h>
 #endif
+#include <string.h>
 #include "util/compiler.h"
 #include "util/macros.h"
 
@@ -46,6 +47,13 @@ struct _egl_device {
    EGLBoolean MESA_device_software;
    EGLBoolean EXT_device_drm;
    EGLBoolean EXT_device_drm_render_node;
+
+   /*
+    * Android exposes Mali through a Kbase character device instead of DRM.
+    * Keep its path so Linux clients which use the EGL render-device query as
+    * an fd carrier (notably VA-API probes) can open the same hardware device.
+    */
+   char *kbase_device_path;
 
 #ifdef HAVE_LIBDRM
    drmDevicePtr device;
@@ -75,6 +83,7 @@ _eglFiniDevice(void)
       if (_eglDeviceSupports(dev, _EGL_DEVICE_DRM))
          drmFreeDevice(&dev->device);
 #endif
+      free(dev->kbase_device_path);
       free(dev);
    }
 
@@ -199,7 +208,7 @@ out:
 }
 
 _EGLDevice *
-_eglAddKbaseDevice(void)
+_eglAddKbaseDevice(const char *device_path)
 {
    _EGLDevice *dev;
 
@@ -210,14 +219,31 @@ _eglAddKbaseDevice(void)
    while (dev->Next) {
       dev = dev->Next;
       if (!_eglDeviceSupports(dev, _EGL_DEVICE_SOFTWARE) &&
-          !_eglDeviceSupports(dev, _EGL_DEVICE_DRM))
+          !_eglDeviceSupports(dev, _EGL_DEVICE_DRM)) {
+         if (!dev->kbase_device_path && device_path && device_path[0]) {
+            dev->kbase_device_path = strdup(device_path);
+            if (dev->kbase_device_path) {
+               dev->extensions = "EGL_EXT_device_drm_render_node";
+               dev->EXT_device_drm_render_node = EGL_TRUE;
+            }
+         }
          goto out;
+      }
    }
 
    dev->Next = calloc(1, sizeof(_EGLDevice));
    dev = dev->Next;
-   if (dev)
-      dev->extensions = "";
+   if (dev) {
+      if (device_path && device_path[0])
+         dev->kbase_device_path = strdup(device_path);
+
+      if (dev->kbase_device_path) {
+         dev->extensions = "EGL_EXT_device_drm_render_node";
+         dev->EXT_device_drm_render_node = EGL_TRUE;
+      } else {
+         dev->extensions = "";
+      }
+   }
 
 out:
    simple_mtx_unlock(_eglGlobal.Mutex);
@@ -249,6 +275,8 @@ _eglDeviceSupports(_EGLDevice *dev, _EGLDeviceExtension ext)
 const char *
 _eglGetDRMDeviceRenderNode(_EGLDevice *dev)
 {
+   if (dev->kbase_device_path)
+      return dev->kbase_device_path;
 #ifdef HAVE_LIBDRM
    return dev->device->nodes[DRM_NODE_RENDER];
 #else
@@ -288,6 +316,8 @@ _eglQueryDeviceStringEXT(_EGLDevice *dev, EGLint name)
    case EGL_DRM_RENDER_NODE_FILE_EXT:
       if (!_eglDeviceSupports(dev, _EGL_DEVICE_DRM_RENDER_NODE))
          break;
+      if (dev->kbase_device_path)
+         return dev->kbase_device_path;
 #ifdef HAVE_LIBDRM
       return dev->device ? dev->device->nodes[DRM_NODE_RENDER] : NULL;
 #else

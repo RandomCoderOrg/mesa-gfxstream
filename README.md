@@ -11,6 +11,12 @@ This repository carries three deliberately separate acceleration paths:
 | Mali Vulkan wrapper | Vulkan for native Termux/Bionic programs | Mesa wrapper adds X11/XCB WSI around Android's proprietary Mali Vulkan driver. |
 | libhybris Vulkan | Vulkan for glibc PRoot programs | sysvk and libhybris call the Android Mali Vulkan HAL; a patched WSI layer presents DMA-BUFs through Termux:X11 DRI3. |
 
+It also carries an experimental rootless H.264 decode bridge. A native Termux
+service runs Tensor's Exynos MediaCodec component; GStreamer or a glibc VA-API
+driver feeds it from Jammy. Stock Firefox now detects that VA driver and enters
+hardware decode without a custom build, although decoded-frame presentation is
+still incomplete. See [`tensor-g1/media-codec/README.md`](tensor-g1/media-codec/README.md).
+
 None of these paths replaces the Android kernel driver. The Vulkan routes are
 not PanVK, and the OpenGL path does not use ANGLE, Zink, VirGL, or Vulkan.
 

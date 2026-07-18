@@ -1502,6 +1502,7 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
    _EGLDevice *dev;
    struct dri2_egl_display *dri2_dpy;
    const char *pan_mali_x11 = getenv("PAN_MALI_X11_SWRAST");
+   const char *pan_mali_device = getenv("PAN_MALI_DEV");
    const bool panfrost_backed =
       pan_mali_x11 && strcmp(pan_mali_x11, "0") != 0;
 
@@ -1513,7 +1514,7 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
    if (!dri2_get_xcb_connection(disp, dri2_dpy))
       goto cleanup;
 
-   dev = panfrost_backed ? _eglAddKbaseDevice()
+   dev = panfrost_backed ? _eglAddKbaseDevice(pan_mali_device)
                          : _eglAddDevice(dri2_dpy->fd, true);
    if (!dev) {
       _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to find EGLDevice");

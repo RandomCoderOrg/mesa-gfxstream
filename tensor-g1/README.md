@@ -322,9 +322,13 @@ WebRender, `mesa/panfrost`, and Panfrost for both WebGL versions. The wrapper
 retains Firefox-only OpenGL 3.2/GLSL 1.50 overrides for compositor paths that
 request a 3.2 core context. Do not export them globally.
 
-Firefox still cannot use its VA-API hardware-video path because that path
-requires a DRM render fd. The independent MediaCodec/GStreamer bridge and its
-current browser-integration boundary are documented in
+Firefox now reaches the experimental Tensor VA-API driver without a custom
+browser build. Mesa reports accessible Kbase `/dev/mali0` as the compatibility
+device carrier, Firefox's stock probe reports H.264 hardware support, and its
+RDD process decoded a local H.264 frame through Android MediaCodec. Presentation
+of that decoded DMA-heap NV12 surface was blank in the tested window and the
+RDD sandbox currently must be disabled per launch. The implementation and
+remaining browser-integration boundary are documented in
 [`media-codec/README.md`](media-codec/README.md).
 
 GNOME Web can use that bridge. WebKitGTK's DMA-BUF renderer must be disabled
@@ -422,7 +426,9 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
 - `MESA-LOADER: failed to retrieve device information` is expected because
   `/dev/mali0` is Kbase, not a DRM render node.
 - The MediaCodec bridge is H.264-only and CPU-copies decoded NV12 frames over a
-  Unix socket. It is a functional prototype, not a zero-copy browser path.
+  Unix socket into exportable DMA-heap VA surfaces. FFmpeg readback is verified
+  pixel-exact, but stock Firefox presentation remains blank; it is not yet a
+  working or zero-copy browser path.
 - GNOME Web 42.4 segfaults in GTK style-provider setup if WebKit's DMA-BUF
   renderer is enabled. Use `desktop/run-epiphany-panfrost`, which disables
   only that renderer; Panfrost composition and MediaCodec video decoding stay

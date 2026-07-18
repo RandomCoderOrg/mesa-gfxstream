@@ -2,13 +2,17 @@
 
 This directory contains an experimental bridge from ARM64 Linux applications
 inside a uDroid/PRoot container to Android's native MediaCodec service. It does
-not use a V4L2 device, VA-API driver, copied vendor library, root permission, or
-kernel change.
+not use a V4L2 device, copied vendor library, root permission, kernel change,
+or custom Firefox build. Both GStreamer and an experimental VA-API frontend
+use the same local bridge.
 
 The tested H.264 path runs the Codec2 Exynos decoder from a native Bionic
 process in Termux. A GStreamer element in Jammy sends compressed access units
 over the `/tmp` directory shared by uDroid and Termux, then receives
-CPU-readable NV12 frames.
+CPU-readable NV12 frames. The VA-API frontend additionally repackages the
+picture/slice buffers emitted by FFmpeg, synthesizes the required Annex-B H.264
+parameter sets, and stores returned frames in exportable Android DMA-heap
+buffers.
 
 > [!WARNING]
 > This is a proof-of-function prototype. Decoded frames are copied out of
@@ -20,15 +24,21 @@ CPU-readable NV12 frames.
 
 ```mermaid
 flowchart LR
-    APP["Jammy application or browser"] --> GST["GStreamer tensorh264dec"]
+    APP["Jammy application or stock Firefox"] --> API{"Linux decode API"}
+    API --> GST["GStreamer tensorh264dec"]
+    API --> VA["tensor VA-API driver"]
     GST -->|"Annex-B H.264 access units"| SOCK["Unix socket in shared /tmp"]
+    VA -->|"VA picture + raw slices -> Annex-B"| SOCK
     SOCK --> SVC["Native Termux service\nBionic + NDK MediaCodec"]
     SVC --> C2["c2.exynos.h264.decoder"]
     C2 --> GPU["Tensor G1 hardware video decoder"]
     GPU -->|"CPU-readable padded NV12"| SVC
     SVC -->|"raw frame copy"| SOCK
     SOCK -->|"crop stride and slice padding"| GST
+    SOCK -->|"padded NV12 copy"| VA
+    VA --> HEAP["/dev/dma_heap/system\nDRM-PRIME export"]
     GST -->|"tightly packed NV12"| APP
+    HEAP --> APP
 ```
 
 The service explicitly starts an NDK Binder thread pool. A standalone Termux
@@ -48,6 +58,7 @@ library using `dlopen` and `dlsym`.
 | `bridge-protocol.h` | Both ABIs | Versioned 40-byte local message header |
 | `bridge-client.c` | Jammy/glibc | End-to-end bridge validation client |
 | `gsttensorh264dec.c` | Jammy/glibc | GStreamer `GstVideoDecoder` element |
+| `va/tensor_drv_video.c` | Jammy/glibc | H.264 VA-API frontend for FFmpeg and stock Firefox |
 
 ## Build the native Android side
 
@@ -119,6 +130,22 @@ rm -f /root/.cache/gstreamer-1.0/registry.aarch64.bin
 gst-inspect-1.0 tensorh264dec
 ```
 
+Build and install the experimental VA-API driver after installing `libva-dev`:
+
+```sh
+make -C tensor-g1/media-codec/va
+make -C tensor-g1/media-codec/va install
+LIBVA_DRIVER_NAME=tensor \
+LIBVA_DRIVERS_PATH=/opt/tensor-va/lib/dri \
+  vainfo --display drm --device /dev/mali0
+```
+
+`/dev/mali0` is used only as the accessible display/file-descriptor carrier;
+it is a Kbase device, not a DRM render node. Mesa's Tensor EGL device reports
+it through `EGL_DRM_RENDER_NODE_FILE_EXT` so an unmodified Firefox can pass it
+to libva. The Pixel's real `/dev/dri/renderD128` belongs to Exynos display DRM
+and SELinux denies opening it from the Termux app domain.
+
 ## Run the bridge
 
 uDroid binds Termux's `$PREFIX/tmp` to `/tmp` inside Jammy. Start the native
@@ -141,7 +168,21 @@ GST_DEBUG=tensorh264dec:5 gst-launch-1.0 -q \
   h264parse config-interval=-1 ! \
   video/x-h264,stream-format=byte-stream,alignment=au ! \
   tensorh264dec ! fakesink sync=false
+
+LIBVA_DRIVER_NAME=tensor \
+LIBVA_DRIVERS_PATH=/opt/tensor-va/lib/dri \
+ffmpeg -hwaccel vaapi -hwaccel_device /dev/mali0 \
+  -hwaccel_output_format vaapi -i sample-annex-b.h264 \
+  -vf hwdownload,format=nv12 -frames:v 10 -f framemd5 -
+
+TENSOR_VAAPI=1 tensor-g1/desktop/run-firefox-panfrost \
+  file:///tmp/sample.mp4
 ```
+
+`TENSOR_VAAPI=1` disables Firefox's RDD subprocess sandbox because that sandbox
+cannot open the shared Unix socket and Android DMA heap inside PRoot. Content
+process sandboxing remains enabled. This is a security tradeoff and should stay
+an explicit per-launch opt-in.
 
 The service accepts clients sequentially and remains available after a client
 disconnects. Pass `--once` after the socket path for a one-client smoke.
@@ -153,6 +194,8 @@ Optional environment variables:
 | `TENSOR_MEDIACODEC_SOCKET` | `/tmp/tensor-mediacodec.sock` | Plugin socket path |
 | `TENSOR_MEDIACODEC_COMPONENT` | `c2.exynos.h264.decoder` | Android component name |
 | `TENSOR_MEDIACODEC_INBAND_CSD` | unset | Standalone decoder uses in-band SPS/PPS |
+| `TENSOR_VA_DMA_HEAP` | `system` | DMA heap used for VA decode surfaces |
+| `TENSOR_VA_DEBUG` | unset | Log VA surface creation, decode, and export calls |
 
 ## Pixel 6a results
 
@@ -172,20 +215,26 @@ The two-second 1920x1080 60 FPS H.264 stream produced these checkpoints:
 - Jammy bridge client: 120/120 access units and frames, 373,363,200 raw bytes,
   and EOS in 1.227 seconds, about 98 decoded/copied FPS.
 - GStreamer element: 120/120 NV12 frames delivered to `fakesink`.
+- VA-API/FFmpeg: ten downloaded 1920x1080 NV12 frames matched software decode
+  byte-for-byte by MD5, while Android selected `c2.exynos.h264.decoder`.
+- Stock Firefox's unmodified `glxtest` reported `/dev/mali0`, its unmodified
+  `vaapitest` reported H.264 hardware support, and an RDD video decode produced
+  a MediaCodec NV12 frame through the VA driver.
 - GNOME Web 42.4: `tensorh264dec` selected by WebKit/GStreamer and the 1080p60
   test pattern visibly painted under Panfrost when launched through
   `desktop/run-epiphany-panfrost --private-instance`.
 - MediaCodec initially reported a 1920x1088 padded slice height, then 1080.
   The plugin strips stride/slice padding before exposing 1920x1080 NV12.
 
-These results prove rootless hardware decode and cross-ABI transport. They do
-not prove sustained thermal performance, arbitrary H.264 compatibility, or a
-working browser path.
+These results prove rootless hardware decode, cross-ABI transport, and the
+stock Firefox decode entry path. Firefox's decoded-frame presentation remains
+incomplete: the tested local video window was blank after a successful decode.
 
 ## Current limitations
 
-- H.264 byte-stream input only; access units must be aligned and carry in-band
-  SPS/PPS for the service.
+- H.264 only. GStreamer input must carry in-band SPS/PPS; the VA frontend
+  synthesizes baseline/main/high SPS/PPS from VA picture parameters. Streams
+  using unusual POC type 1 offsets or custom scaling matrices need more work.
 - One active client at a time; no protocol negotiation beyond version 1.
 - Host-endian protocol intended only for local ARM64 processes.
 - No flush, seek, mid-stream reconfiguration, resolution change, or recovery
@@ -194,8 +243,12 @@ working browser path.
 - Every decoded frame is copied out of MediaCodec, over the socket, and into a
   new GStreamer NV12 buffer. The 1080p60 smoke moves roughly 373 MB in two
   seconds before display/compositor copies.
-- No AHardwareBuffer, DMA-BUF, GstMemory, VA-API, or zero-copy output yet.
-- Firefox's VA-API path still rejects the device because there is no DRM render
-  fd. GNOME Web/GStreamer works through the bridge when WebKit's DRM/GBM-based
+- VA surfaces are allocated from `/dev/dma_heap/system` and export a standard
+  DRM-PRIME NV12 descriptor, but MediaCodec output still crosses the socket as
+  a CPU copy. Direct MediaCodec output into those buffers is future work.
+- Stock Firefox reaches and decodes through the VA driver only with its RDD
+  sandbox disabled. Its decoded frame did not paint in the tested window, so
+  DRM-PRIME/Panfrost import or Firefox presentation still needs diagnosis.
+- GNOME Web/GStreamer works through the bridge when WebKit's DRM/GBM-based
   DMA-BUF renderer is disabled. The legacy WebKit renderer still composes with
   Panfrost, but decoded NV12 frames continue to cross the socket as CPU copies.
