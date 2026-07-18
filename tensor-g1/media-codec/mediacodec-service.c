@@ -45,7 +45,7 @@ write_all(int fd, const void *data, size_t size)
 {
    const uint8_t *cursor = data;
    while (size) {
-      ssize_t sent = write(fd, cursor, size);
+      ssize_t sent = send(fd, cursor, size, MSG_NOSIGNAL);
       if (sent == 0)
          return 0;
       if (sent < 0) {
@@ -286,6 +286,9 @@ serve_client(int fd)
       break;
    }
 
+   /* Wake a failed client before a vendor codec stop has a chance to block. */
+   if (!result)
+      shutdown(fd, SHUT_RDWR);
    if (started)
       AMediaCodec_stop(codec);
    if (codec)
@@ -298,6 +301,7 @@ serve_client(int fd)
 int
 main(int argc, char **argv)
 {
+   setvbuf(stdout, NULL, _IOLBF, 0);
    const char *path = argc > 1 ? argv[1] : "/tmp/tensor-mediacodec.sock";
    int once = argc > 2 && strcmp(argv[2], "--once") == 0;
    if (!start_binder_thread_pool()) {

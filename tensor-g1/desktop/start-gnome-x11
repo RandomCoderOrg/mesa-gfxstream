@@ -27,6 +27,15 @@ export PAN_MALI_X11_DRI3="${PAN_MALI_X11_DRI3:-0}"
 export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-0}"
 export PAN_MESA_DEBUG="${PAN_MESA_DEBUG:-sync}"
 
+# GNOME Shell 42 decides whether logind exists solely by checking this runtime
+# directory. Ubuntu's systemd packages recreate it even though systemd is not
+# PID 1 in PRoot, which makes Shell abort while activating login1. Remove only
+# the empty marker when no systemd process is running so Shell selects its
+# built-in dummy login manager.
+if ! pgrep -x systemd >/dev/null 2>&1; then
+   rmdir /run/systemd/seats 2>/dev/null || true
+fi
+
 # GNOME's power, accounts, colour, and settings components expect a system bus.
 # PRoot has no init system to create it, so keep a private bus inside the
 # container. Remove only a stale socket/pid left by a previously killed PRoot.

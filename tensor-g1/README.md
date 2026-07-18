@@ -295,13 +295,18 @@ cc -shared -fPIC -Wl,-soname,libpci.so.3 \
 ln -sf libpci.so.3 /opt/firefox-glxtest-stub/libpci.so
 tensor-g1/desktop/start-gnome-x11
 tensor-g1/desktop/run-firefox-panfrost about:support
+tensor-g1/desktop/run-epiphany-panfrost --private-instance \
+  file:///tmp/video-loop.html
 ```
 
 They deliberately default `PAN_MALI_X11_DRI3=0` and
 `PAN_MALI_DMABUF_IMPORT=0`. GNOME Shell uses EGL, whose X11 loader does not yet
 implement the private reusable DMA-BUF presentation callback used by the GLX
 path. Final desktop windows are therefore CPU-presented while rendering stays
-on Mali-G78.
+on Mali-G78. The GNOME wrapper also removes an empty `/run/systemd/seats`
+marker when no systemd process exists. Without that PRoot guard, GNOME Shell 42
+mistakes the directory installed by the systemd package for a working logind
+service and aborts during background initialization.
 
 Android exposes `/sys/bus/pci` but not `/proc/bus/pci/devices` inside PRoot.
 Firefox's short-lived graphics test consequently exits inside libpci before it
@@ -321,6 +326,14 @@ Firefox still cannot use its VA-API hardware-video path because that path
 requires a DRM render fd. The independent MediaCodec/GStreamer bridge and its
 current browser-integration boundary are documented in
 [`media-codec/README.md`](media-codec/README.md).
+
+GNOME Web can use that bridge. WebKitGTK's DMA-BUF renderer must be disabled
+because it assumes a DRM/GBM device, while this port exposes Kbase
+`/dev/mali0`. `run-epiphany-panfrost` scopes that workaround and WebKit's
+PRoot sandbox exception to GNOME Web. WebKit accelerated composition remains
+enabled: the tested browser visibly painted the 1080p60 test pattern through
+Panfrost while GStreamer selected `tensorh264dec` and Android selected
+`c2.exynos.h264.decoder`.
 
 ## Verified status
 
@@ -410,9 +423,12 @@ current browser-integration boundary are documented in
   `/dev/mali0` is Kbase, not a DRM render node.
 - The MediaCodec bridge is H.264-only and CPU-copies decoded NV12 frames over a
   Unix socket. It is a functional prototype, not a zero-copy browser path.
-- GNOME Web 42.4 reaches the repaired Panfrost surfaceless EGL path but then
-  segfaults in GTK style-provider setup before loading the test page. Browser
-  hardware-video integration is therefore not yet verified.
+- GNOME Web 42.4 segfaults in GTK style-provider setup if WebKit's DMA-BUF
+  renderer is enabled. Use `desktop/run-epiphany-panfrost`, which disables
+  only that renderer; Panfrost composition and MediaCodec video decoding stay
+active. Epiphany session restore may reopen several Web processes and create
+  avoidable memory pressure on the 6 GB test device; use `--private-instance`
+  for isolated video smokes.
 
 This branch demonstrates that a Termux/proot process can render on Tensor G1's
 Mali-G78 with an open Panfrost userspace stack. It does not yet demonstrate a

@@ -14,7 +14,9 @@ transfer(int fd, void *data, size_t size, int writing)
 {
    uint8_t *cursor = data;
    while (size) {
-      ssize_t count = writing ? write(fd, cursor, size) : read(fd, cursor, size);
+      ssize_t count =
+         writing ? send(fd, cursor, size, MSG_NOSIGNAL)
+                 : read(fd, cursor, size);
       if (count == 0)
          return 0;
       if (count < 0) {

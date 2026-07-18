@@ -172,6 +172,9 @@ The two-second 1920x1080 60 FPS H.264 stream produced these checkpoints:
 - Jammy bridge client: 120/120 access units and frames, 373,363,200 raw bytes,
   and EOS in 1.227 seconds, about 98 decoded/copied FPS.
 - GStreamer element: 120/120 NV12 frames delivered to `fakesink`.
+- GNOME Web 42.4: `tensorh264dec` selected by WebKit/GStreamer and the 1080p60
+  test pattern visibly painted under Panfrost when launched through
+  `desktop/run-epiphany-panfrost --private-instance`.
 - MediaCodec initially reported a 1920x1088 padded slice height, then 1080.
   The plugin strips stride/slice padding before exposing 1920x1080 NV12.
 
@@ -186,12 +189,13 @@ working browser path.
 - One active client at a time; no protocol negotiation beyond version 1.
 - Host-endian protocol intended only for local ARM64 processes.
 - No flush, seek, mid-stream reconfiguration, resolution change, or recovery
-  after a client disconnects mid-frame.
+  after a client disconnects mid-frame. WebKit's HTML loop can consequently
+  discard a few delayed frames at the end of each two-second test cycle.
 - Every decoded frame is copied out of MediaCodec, over the socket, and into a
   new GStreamer NV12 buffer. The 1080p60 smoke moves roughly 373 MB in two
   seconds before display/compositor copies.
 - No AHardwareBuffer, DMA-BUF, GstMemory, VA-API, or zero-copy output yet.
 - Firefox's VA-API path still rejects the device because there is no DRM render
-  fd. GNOME Web/GStreamer is the shorter integration route, but GNOME Web 42.4
-  currently segfaults in GTK style-provider setup after Panfrost surfaceless
-  EGL initializes and before the test page loads.
+  fd. GNOME Web/GStreamer works through the bridge when WebKit's DRM/GBM-based
+  DMA-BUF renderer is disabled. The legacy WebKit renderer still composes with
+  Panfrost, but decoded NV12 frames continue to cross the socket as CPU copies.

@@ -53,7 +53,8 @@ transfer_bytes(int fd, void *data, gsize size, gboolean writing)
    guint8 *cursor = data;
    while (size) {
       ssize_t count =
-         writing ? write(fd, cursor, size) : read(fd, cursor, size);
+         writing ? send(fd, cursor, size, MSG_NOSIGNAL)
+                 : read(fd, cursor, size);
       if (count == 0)
          return FALSE;
       if (count < 0) {
