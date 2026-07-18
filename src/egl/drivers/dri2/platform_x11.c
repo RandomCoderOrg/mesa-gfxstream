@@ -1502,6 +1502,8 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
    _EGLDevice *dev;
    struct dri2_egl_display *dri2_dpy;
    const char *pan_mali_x11 = getenv("PAN_MALI_X11_SWRAST");
+   const bool panfrost_backed =
+      pan_mali_x11 && strcmp(pan_mali_x11, "0") != 0;
 
    dri2_dpy = calloc(1, sizeof *dri2_dpy);
    if (!dri2_dpy)
@@ -1511,7 +1513,8 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
    if (!dri2_get_xcb_connection(disp, dri2_dpy))
       goto cleanup;
 
-   dev = _eglAddDevice(dri2_dpy->fd, true);
+   dev = panfrost_backed ? _eglAddKbaseDevice()
+                         : _eglAddDevice(dri2_dpy->fd, true);
    if (!dev) {
       _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to find EGLDevice");
       goto cleanup;
@@ -1523,8 +1526,7 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
     * Every hardware driver_name is set using strdup. Doing the same in
     * here will allow is to simply free the memory at dri2_terminate().
     */
-   dri2_dpy->driver_name = strdup(pan_mali_x11 && strcmp(pan_mali_x11, "0") ?
-                                  "panfrost" :
+   dri2_dpy->driver_name = strdup(panfrost_backed ? "panfrost" :
                                   (disp->Options.Zink ? "zink" : "swrast"));
    if (!dri2_load_driver_swrast(disp))
       goto cleanup;

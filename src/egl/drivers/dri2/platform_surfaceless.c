@@ -248,15 +248,20 @@ surfaceless_probe_mali(_EGLDisplay *disp)
    if (dri2_dpy->fd < 0)
       return false;
 
-   /* Kbase character devices are not DRM devices, so they cannot be added as
-    * EGL_EXT_device_drm devices.  The software device is only used as the EGL
-    * bookkeeping object; rendering is still performed by Panfrost.
+   /* Kbase character devices are hardware devices without DRM nodes.  Keep a
+    * distinct EGL bookkeeping device so clients do not misclassify the real
+    * Panfrost renderer through EGL_MESA_device_software.
     */
-   disp->Device = _eglAddDevice(dri2_dpy->fd, true);
+   disp->Device = _eglAddKbaseDevice();
    dri2_dpy->driver_name = strdup("panfrost");
 
+   /* This Panfork Gallium target exposes the swrast-loader ABI (the same ABI
+    * used by the working X11 CPU presenter), not DRI_IMAGE_DRIVER.  Loading
+    * through that ABI still creates a Panfrost screen on the Kbase fd; only
+    * the allocation/presentation callbacks are CPU-addressable.
+    */
    if (!disp->Device || !dri2_dpy->driver_name ||
-       !dri2_load_driver_dri3(disp)) {
+       !dri2_load_driver_swrast(disp)) {
       free(dri2_dpy->driver_name);
       dri2_dpy->driver_name = NULL;
       close(dri2_dpy->fd);
@@ -264,7 +269,7 @@ surfaceless_probe_mali(_EGLDisplay *disp)
       return false;
    }
 
-   dri2_dpy->loader_extensions = image_loader_extensions;
+   dri2_dpy->loader_extensions = swrast_loader_extensions;
    return true;
 }
 
@@ -373,11 +378,13 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
    dri2_dpy->fd = -1;
    disp->DriverData = (void *) dri2_dpy;
 
-   /* When ForceSoftware is false, we try the HW driver.  When ForceSoftware
-    * is true, we try kms_swrast and swrast in order.
+   /* PAN_MALI_DEV is an explicit request for the rootless Kbase backend.  The
+    * X11 frontend also sets ForceSoftware to select its patched presentation
+    * path, but that must not turn a WebKit surfaceless helper into llvmpipe.
+    * If the explicit Kbase probe fails, retain Mesa's normal hardware or
+    * software fallback order.
     */
-   if (!disp->Options.ForceSoftware)
-      driver_loaded = surfaceless_probe_mali(disp);
+   driver_loaded = surfaceless_probe_mali(disp);
 
    if (!driver_loaded)
       driver_loaded = surfaceless_probe_device(disp, disp->Options.ForceSoftware);

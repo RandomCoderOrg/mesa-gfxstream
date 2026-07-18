@@ -72,8 +72,8 @@ _eglFiniDevice(void)
       dev_list = dev_list->Next;
 
 #ifdef HAVE_LIBDRM
-      assert(_eglDeviceSupports(dev, _EGL_DEVICE_DRM));
-      drmFreeDevice(&dev->device);
+      if (_eglDeviceSupports(dev, _EGL_DEVICE_DRM))
+         drmFreeDevice(&dev->device);
 #endif
       free(dev);
    }
@@ -198,6 +198,32 @@ out:
    return dev;
 }
 
+_EGLDevice *
+_eglAddKbaseDevice(void)
+{
+   _EGLDevice *dev;
+
+   simple_mtx_lock(_eglGlobal.Mutex);
+   dev = _eglGlobal.DeviceList;
+
+   /* Reuse the process-global non-DRM hardware bookkeeping device. */
+   while (dev->Next) {
+      dev = dev->Next;
+      if (!_eglDeviceSupports(dev, _EGL_DEVICE_SOFTWARE) &&
+          !_eglDeviceSupports(dev, _EGL_DEVICE_DRM))
+         goto out;
+   }
+
+   dev->Next = calloc(1, sizeof(_EGLDevice));
+   dev = dev->Next;
+   if (dev)
+      dev->extensions = "";
+
+out:
+   simple_mtx_unlock(_eglGlobal.Mutex);
+   return dev;
+}
+
 EGLBoolean
 _eglDeviceSupports(_EGLDevice *dev, _EGLDeviceExtension ext)
 {
@@ -293,6 +319,12 @@ _eglRefreshDeviceList(void)
    assert(dev);
    assert(_eglDeviceSupports(dev, _EGL_DEVICE_SOFTWARE));
    count++;
+
+   /* Android Kbase devices are hardware devices without DRM nodes. */
+   for (dev = dev->Next; dev; dev = dev->Next) {
+      if (!_eglDeviceSupports(dev, _EGL_DEVICE_DRM))
+         count++;
+   }
 
 #ifdef HAVE_LIBDRM
    drmDevicePtr devices[64];

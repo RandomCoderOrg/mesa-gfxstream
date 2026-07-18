@@ -58,6 +58,10 @@ _eglLookupDevice(EGLDeviceEXT device)
 _EGLDevice *
 _eglAddDevice(int fd, bool software);
 
+/* Add the non-DRM hardware bookkeeping device used by Android Kbase. */
+_EGLDevice *
+_eglAddKbaseDevice(void);
+
 enum _egl_device_extension {
    _EGL_DEVICE_SOFTWARE,
    _EGL_DEVICE_DRM,
