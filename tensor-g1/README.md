@@ -4,7 +4,9 @@ This directory contains an experimental userspace Panfrost port for the
 Mali-G78 MP20 in Google Tensor G1. It submits jobs directly to Android's Kbase
 `/dev/mali0` node; it does not replace or modify the Android kernel driver.
 
-This document covers the open-source OpenGL path. The separate proprietary
+This document covers the open-source OpenGL path. The rootless Android
+MediaCodec bridge is documented in
+[`media-codec/README.md`](media-codec/README.md), and the separate proprietary
 Vulkan integration is documented in
 [`vulkan-wrapper/README.md`](vulkan-wrapper/README.md).
 
@@ -79,8 +81,14 @@ report `Mali-G78 (Panfrost)`.
 These changes intentionally cut across Mesa layers instead of adding a clean
 Android/Kbase winsys:
 
-- `platform_surfaceless.c` opens the device named by `PAN_MALI_DEV`, uses a
-  software EGL device only for bookkeeping, and force-loads `panfrost_dri.so`.
+- `platform_surfaceless.c` opens the device named by `PAN_MALI_DEV`, records a
+  non-DRM Kbase hardware device for EGL bookkeeping, and loads
+  `panfrost_dri.so` through this fork's swrast-loader ABI. The ABI supplies
+  CPU-addressable surfaces; the selected renderer remains Panfrost.
+- `platform_x11.c` uses the same non-DRM Kbase EGL device when its repurposed
+  software-presentation frontend is backed by Panfrost. This prevents clients
+  such as Firefox from classifying the renderer as
+  `EGL_MESA_device_software`.
 - `platform_x11.c`, `drisw.c`, `drisw_glx.c`, and the DRI target route the
   swrast loader into a real Panfrost `pipe_screen` when
   `PAN_MALI_X11_SWRAST=1`.
@@ -116,7 +124,7 @@ Android/Kbase winsys:
   software frontend.
 
 The result is useful as a research/prototyping driver, but the environment
-variable switches, fake software-device bookkeeping, private loader ABI,
+variable switches, non-DRM EGL bookkeeping device, private loader ABI,
 fixed-size Present queue, device-specific quirks, and hard-coded aarch64
 install layout all need proper design work before anything could be proposed
 upstream.
@@ -151,6 +159,12 @@ cc -O2 -Wall -Wextra \
   -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
   -lEGL -lGLESv2 -o egl-smoke
+
+cc -O2 -Wall -Wextra \
+  -I/opt/panfork-tensor/include tensor-g1/desktop/surfaceless-probe.c \
+  -L/opt/panfork-tensor/lib/aarch64-linux-gnu \
+  -Wl,-rpath,/opt/panfork-tensor/lib/aarch64-linux-gnu \
+  -lEGL -lGLESv2 -o surfaceless-probe
 
 cc -O2 -Wall -Wextra \
   -I/opt/panfork-tensor/include tensor-g1/panfork/egl-x11-smoke.c \
@@ -196,6 +210,7 @@ The surfaceless test does not require a display:
 
 ```sh
 tensor-g1/panfork/run-panfrost ./egl-smoke
+tensor-g1/panfork/run-panfrost ./surfaceless-probe
 ```
 
 Start Termux:X11 on display `:0` before running windowed applications, then
@@ -265,6 +280,48 @@ LD_LIBRARY_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu
 LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
 ```
 
+## GNOME desktop and native ARM64 Firefox
+
+The `desktop/` wrappers run GNOME Shell and Mozilla's native aarch64 Firefox
+through the same isolated Panfrost install:
+
+```sh
+install -Dm644 tensor-g1/desktop/firefox-user.js \
+  /root/.mozilla/firefox/panfrost-profile/user.js
+mkdir -p /opt/firefox-glxtest-stub
+cc -shared -fPIC -Wl,-soname,libpci.so.3 \
+  tensor-g1/desktop/glxtest-no-pci.c \
+  -o /opt/firefox-glxtest-stub/libpci.so.3
+ln -sf libpci.so.3 /opt/firefox-glxtest-stub/libpci.so
+tensor-g1/desktop/start-gnome-x11
+tensor-g1/desktop/run-firefox-panfrost about:support
+```
+
+They deliberately default `PAN_MALI_X11_DRI3=0` and
+`PAN_MALI_DMABUF_IMPORT=0`. GNOME Shell uses EGL, whose X11 loader does not yet
+implement the private reusable DMA-BUF presentation callback used by the GLX
+path. Final desktop windows are therefore CPU-presented while rendering stays
+on Mali-G78.
+
+Android exposes `/sys/bus/pci` but not `/proc/bus/pci/devices` inside PRoot.
+Firefox's short-lived graphics test consequently exits inside libpci before it
+can test the GPU. Build `glxtest-no-pci.c` as `libpci.so.3` and install it only
+under `/opt/firefox-glxtest-stub`; the Firefox wrapper prepends that directory
+to its own `LD_LIBRARY_PATH`. The deliberately empty shim makes Firefox treat
+PCI discovery as unavailable and continue to the real EGL test. Do not install
+it system-wide.
+
+With that shim, Firefox's probe exits successfully with `TEST_TYPE EGL`,
+`DRI_DRIVER panfrost`, and `Mali-G78 (Panfrost)`. `about:support` reports
+WebRender, `mesa/panfrost`, and Panfrost for both WebGL versions. The wrapper
+retains Firefox-only OpenGL 3.2/GLSL 1.50 overrides for compositor paths that
+request a 3.2 core context. Do not export them globally.
+
+Firefox still cannot use its VA-API hardware-video path because that path
+requires a DRM render fd. The independent MediaCodec/GStreamer bridge and its
+current browser-integration boundary are documented in
+[`media-codec/README.md`](media-codec/README.md).
+
 ## Verified status
 
 - Surfaceless EGL/GLES renders and reads back the expected pixel.
@@ -311,6 +368,15 @@ LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
 - Khronos VK-GL-CTS 3.2.8.0 targeted smoke groups passed 95/95 cases: 44
   GLES3, 41 GLES2, and 10 EGL. This is deliberately small coverage, not a
   conformance claim.
+- Surfaceless EGL now uses the explicit Kbase device even though the wrapper
+  sets `LIBGL_ALWAYS_SOFTWARE=1`; `surfaceless-probe` reports EGL 1.4 and
+  `Mali-G78 (Panfrost)` through the swrast-loader ABI.
+- Firefox's EGL probe completes and `about:support` reports WebRender and
+  `mesa/panfrost` rather than a software device.
+- Android MediaCodec selected `c2.exynos.h264.decoder`; the native decoder,
+  Unix-socket bridge, and Jammy GStreamer `tensorh264dec` element each decoded
+  all 120 frames of the 1920x1080 60 FPS smoke stream. The GStreamer element
+  delivered all 120 tightly packed NV12 frames to `fakesink`.
 - G78 AFBC is disabled in this branch. The older AFBC path produced Kbase
   `DATA_INVALID_FAULT` (`0x58`) even for a simple clear.
 - Valhall varying shaders now receive the complete shader environment
@@ -342,6 +408,11 @@ LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
   complete desktop session remain incomplete.
 - `MESA-LOADER: failed to retrieve device information` is expected because
   `/dev/mali0` is Kbase, not a DRM render node.
+- The MediaCodec bridge is H.264-only and CPU-copies decoded NV12 frames over a
+  Unix socket. It is a functional prototype, not a zero-copy browser path.
+- GNOME Web 42.4 reaches the repaired Panfrost surfaceless EGL path but then
+  segfaults in GTK style-provider setup before loading the test page. Browser
+  hardware-video integration is therefore not yet verified.
 
 This branch demonstrates that a Termux/proot process can render on Tensor G1's
 Mali-G78 with an open Panfrost userspace stack. It does not yet demonstrate a

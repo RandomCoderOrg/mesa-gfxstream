@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -x "$script_dir/../panfork/run-panfrost-x11" ]; then
+   panfork_x11="$script_dir/../panfork/run-panfrost-x11"
+elif [ -x "$script_dir/../run-panfrost-x11" ]; then
+   # Compatibility with early device-side checkouts.
+   panfork_x11="$script_dir/../run-panfrost-x11"
+else
+   echo "run-panfrost-x11 was not found next to the desktop scripts" >&2
+   exit 1
+fi
+
+export DISPLAY="${DISPLAY:-:0}"
+export XDG_SESSION_TYPE=x11
+export XDG_CURRENT_DESKTOP=GNOME
+export XDG_SESSION_DESKTOP=gnome
+export DESKTOP_SESSION=gnome
+export GDK_BACKEND=x11
+
+# GNOME Shell exercises EGL rather than the working GLX DRI3 queue. Keep the
+# stable CPU presenter for the desktop until the EGL loader has an equivalent
+# DMA-BUF callback. Rendering itself still happens on Mali-G78 through Panfrost.
+export PAN_MALI_X11_DRI3="${PAN_MALI_X11_DRI3:-0}"
+export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-0}"
+export PAN_MESA_DEBUG="${PAN_MESA_DEBUG:-sync}"
+
+# GNOME's power, accounts, colour, and settings components expect a system bus.
+# PRoot has no init system to create it, so keep a private bus inside the
+# container. Remove only a stale socket/pid left by a previously killed PRoot.
+if ! dbus-send --system --type=method_call \
+   --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames \
+   >/dev/null 2>&1; then
+   mkdir -p /run/dbus
+   # A numeric PID is insufficient here: Android can reuse it after PRoot has
+   # killed the old daemon. The failed round-trip above is the authoritative
+   # stale-bus test.
+   rm -f /run/dbus/pid /run/dbus/system_bus_socket
+   dbus-daemon --system --fork
+fi
+
+exec "$panfork_x11" dbus-run-session -- gnome-shell --x11

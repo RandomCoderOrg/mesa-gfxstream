@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -x "$script_dir/../panfork/run-panfrost-x11" ]; then
+   panfork_x11="$script_dir/../panfork/run-panfrost-x11"
+elif [ -x "$script_dir/../run-panfrost-x11" ]; then
+   panfork_x11="$script_dir/../run-panfrost-x11"
+else
+   echo "run-panfrost-x11 was not found next to the desktop scripts" >&2
+   exit 1
+fi
+
+firefox=${FIREFOX_BIN:-/opt/firefox/firefox}
+if [ ! -x "$firefox" ]; then
+   echo "Firefox was not found at $firefox" >&2
+   exit 1
+fi
+
+profile=${FIREFOX_PROFILE:-/root/.mozilla/firefox/panfrost-profile}
+mkdir -p "$profile"
+
+# Android exposes /sys/bus/pci but PRoot has no /proc/bus/pci/devices. Firefox's
+# glxtest otherwise dies inside libpci before it reaches the real GL test. The
+# app-scoped stub has no libpci entry points, which glxtest treats as a warning.
+glxtest_stub=${FIREFOX_GLXTEST_STUB:-/opt/firefox-glxtest-stub}
+if [ -r "$glxtest_stub/libpci.so.3" ]; then
+   if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+      export LD_LIBRARY_PATH="$glxtest_stub:$LD_LIBRARY_PATH"
+   else
+      export LD_LIBRARY_PATH="$glxtest_stub"
+   fi
+fi
+
+export DISPLAY="${DISPLAY:-:0}"
+export GDK_BACKEND=x11
+export MOZ_ENABLE_WAYLAND=0
+export MOZ_WEBRENDER=1
+
+# Firefox's GLX hardware-WebRender compositor requests a 3.2 core context.
+# This fork normally advertises the conservative GL 3.0 cap, but it can create
+# and initialise the 3.2 context when Mesa's application-scoped override is
+# used. Do not apply these overrides system-wide.
+export MESA_GL_VERSION_OVERRIDE="${MESA_GL_VERSION_OVERRIDE:-3.2}"
+export MESA_GLSL_VERSION_OVERRIDE="${MESA_GLSL_VERSION_OVERRIDE:-150}"
+
+# Keep the conservative presentation mode even though rendering itself stays
+# on Mali-G78. about:support must report mesa/panfrost, not llvmpipe.
+export PAN_MALI_X11_DRI3="${PAN_MALI_X11_DRI3:-0}"
+export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-0}"
+export PAN_MESA_DEBUG="${PAN_MESA_DEBUG:-sync}"
+
+exec "$panfork_x11" "$firefox" --no-remote --profile "$profile" "$@"
