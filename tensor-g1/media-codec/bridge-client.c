@@ -170,6 +170,7 @@ main(int argc, char **argv)
    free(payload);
 
    unsigned frames = 0;
+   unsigned first_output_after_inputs = 0;
    size_t bytes = 0;
    for (unsigned i = 0; i < unit_count; ++i) {
       size_t begin = offsets[i];
@@ -185,6 +186,8 @@ main(int argc, char **argv)
             printf("format=%ux%u stride=%u slice-height=%u\n", message.arg0,
                    message.arg1, message.arg2, message.arg3);
          if (message.type == TMC_FRAME) {
+            if (!first_output_after_inputs)
+               first_output_after_inputs = i + 1;
             frames++;
             bytes += message.payload_size;
          }
@@ -208,8 +211,9 @@ main(int argc, char **argv)
       free(payload);
    } while (message.type != TMC_OUTPUT_EOS);
 
-   printf("access-units=%u decoded-frames=%u decoded-bytes=%zu eos=1\n",
-          unit_count, frames, bytes);
+   printf("access-units=%u decoded-frames=%u decoded-bytes=%zu "
+          "first-output-after-inputs=%u eos=1\n",
+          unit_count, frames, bytes, first_output_after_inputs);
    close(fd);
    free(input);
    return frames == unit_count ? 0 : 1;

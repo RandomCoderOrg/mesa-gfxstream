@@ -72,6 +72,13 @@ There are two separate paths:
    resource into the next frame only after Present reports it idle.
    `PAN_MALI_X11_DRI3=0` restores the older CPU readback/upload fallback.
 
+The optional [AHardwareBuffer presentation path](ahardwarebuffer/README.md)
+replaces the ordinary DMA-heap display target with a broker-owned Android
+buffer. Mesa still imports its data DMA-BUF into Kbase, but Termux:X11 receives
+the complete gralloc handle through its existing private DRI3 socket modifier.
+This makes the source eligible for Android GPU blitting while keeping the route
+rootless. It remains opt-in with `PAN_MALI_X11_AHB=1`.
+
 `LIBGL_ALWAYS_SOFTWARE=1` therefore has a misleading name here. It selects the
 DRI software *presentation frontend*, which this branch then hijacks to create
 a Panfrost screen on `/dev/mali0`. `GL_RENDERER` is the source of truth and must
@@ -100,8 +107,10 @@ Android/Kbase winsys:
   boundary.
 - Panfrost display targets use `/dev/dma_heap/system` when
   `PAN_MALI_X11_DRI3=1`; Kbase imports those allocations through its existing
-  UMM path. The ordinary Kbase allocator remains the fallback for other
-  resources.
+  UMM path. With `PAN_MALI_X11_AHB=1`, a native Bionic broker instead allocates
+  and pools AHardwareBuffers, gives Mesa their data DMA-BUFs, and serves their
+  full native handles to Termux:X11 at Present time. The ordinary Kbase
+  allocator remains the fallback for other resources.
 - DMA-heap allocation is activated only when the loader advertises the private
   callback. Both the GLX and X11 EGL swrast loaders now implement it; setting
   `PAN_MALI_X11_DRI3=0` retains the CPU presenter as a diagnostic fallback.
@@ -115,10 +124,16 @@ Android/Kbase winsys:
   `DATA_INVALID_FAULT` (`0x58`).
 - The Kbase Job Manager shim serialises submissions, fixes its completion
   watermark, and drains outstanding atoms before its 8-bit atom IDs wrap.
+- `PAN_MESA_DEBUG=batchsync` keeps vertex/tiler and fragment atoms asynchronous
+  within a batch, then waits once for the completed batch. It is an experimental
+  middle ground between fully asynchronous submission and per-atom `sync`.
+- Android denies the `kcmp(KCMP_FILE)` identity check to Termux. The Kbase
+  DMA-BUF import cache falls back to matching `fstat` device/inode identity so
+  repeated Firefox imports reuse an existing Kbase handle.
 - Valhall command-stream fixes fill the varying shader's complete resource,
-  FAU, and TLS environment; separate fixed-varying packet bytes from generic
-  attribute stride; zero rounded FAU tails; and correct the primary shader
-  program bits.
+  FAU, and TLS environment; include fixed-function color/lighting slots in both
+  the vertex packet and per-vertex attribute stride; zero rounded FAU tails;
+  and correct the primary shader program bits.
 - The shared tiler heap starts at its real base. The fork-only `base + 64`
   bottom pointer corrupted later geometry after fully culled draws.
 - A few DRI damage paths gain null-resource guards required by the repurposed
@@ -261,6 +276,13 @@ For the currently safer diagnostic mode, serialise GPU work:
 PAN_MESA_DEBUG=sync tensor-g1/panfork/run-panfrost-x11 glxgears
 ```
 
+For lower wait overhead while retaining one completion check per full Job
+Manager batch:
+
+```sh
+PAN_MESA_DEBUG=batchsync tensor-g1/panfork/run-panfrost-x11 glxgears
+```
+
 This costs performance. An unsynchronised windowed glxgears run rendered
 correctly and reached roughly 169--181 FPS, but also printed intermittent Kbase
 atom event `0x58`. The synchronised fullscreen capture ran roughly 69--85 FPS
@@ -274,6 +296,7 @@ DISPLAY=:0
 PAN_MALI_DEV=/dev/mali0
 PAN_MALI_X11_SWRAST=1
 PAN_MALI_X11_DRI3=1
+PAN_MALI_X11_AHB=0
 PAN_MALI_DMABUF_IMPORT=1
 MESA_LOADER_DRIVER_OVERRIDE=panfrost
 LIBGL_ALWAYS_SOFTWARE=1
@@ -325,6 +348,12 @@ unpainted under Mutter. The GNOME wrapper also removes an empty
 guard, GNOME Shell 42 mistakes the directory installed by the systemd package
 for a working logind service and aborts during background initialization.
 
+Firefox can opt into the AHardwareBuffer display-target experiment by exporting
+`PAN_MALI_X11_AHB=1` before running its wrapper. Do not enable that variable for
+GNOME Shell itself: Mutter currently reaches the separate imported-BO CPU-map
+failure and exits with `SIGBUS`. Build, launch, and diagnostic instructions are
+in [`ahardwarebuffer/README.md`](ahardwarebuffer/README.md).
+
 Android exposes `/sys/bus/pci` but not `/proc/bus/pci/devices` inside PRoot.
 Firefox's short-lived graphics test consequently exits inside libpci before it
 can test the GPU. Build `glxtest-no-pci.c` as `libpci.so.3` and install it only
@@ -353,6 +382,16 @@ swaps. The tested 1920x1080 60 FPS H.264 pattern painted visibly while playing
 in stock Firefox. The RDD sandbox currently must be disabled per launch. The
 implementation and remaining copy boundary are documented in
 [`media-codec/README.md`](media-codec/README.md).
+
+For streaming H.264, Exynos Codec2 withholds the first output until later
+access units are queued, while Firefox tries to export that first VA surface
+immediately. The Firefox wrapper now enables the VA frontend's deferred-export
+mode: it exports a preinitialized DMA-BUF, matches delayed output by PTS, and
+normalizes changing MediaCodec row pitches into the immutable exported layout.
+The tested Yorushika YouTube stream stayed on hardware decode across its
+640x368-to-864x480 adaptive transition for 4,672 frames with no sync/export
+failure, decoder fallback, or GPU timeout. This is intentionally a dirty
+rootless workaround, not an upstream-quality explicit-fence implementation.
 
 GNOME Web can use that bridge. WebKitGTK's DMA-BUF renderer must be disabled
 because it assumes a DRM/GBM device, while this port exposes Kbase
@@ -420,6 +459,11 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
 - With X11 EGL and its DRI3 presenter enabled, stock Firefox visibly paints the
   hardware-decoded 1920x1080 60 FPS test pattern together with its accelerated
   browser chrome.
+- The rootless AHardwareBuffer broker supplies buffers that are simultaneously
+  importable by Kbase and recognizable by Termux:X11. In the tested GNOME
+  YouTube run it raised Firefox's observed Present rate from 3.8/s to 17.4/s,
+  while dropped frames improved from 88.2% to 49.6%. This is a meaningful
+  presentation improvement, not a claim of smooth playback.
 - Android MediaCodec selected `c2.exynos.h264.decoder`; the native decoder,
   Unix-socket bridge, and Jammy GStreamer `tensorh264dec` element each decoded
   all 120 frames of the 1920x1080 60 FPS smoke stream. The GStreamer element
@@ -430,9 +474,10 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
   (resources, FAU/uniforms, and thread storage). Previously the v9 malloc-IDVS
   descriptor set only the secondary shader pointer, causing every draw with a
   vertex-to-fragment varying to fail with Kbase `DATA_INVALID_FAULT` (`0x58`).
-- The Valhall malloc-IDVS allocation now separates fixed varyings in the
-  vertex packet from generic varying attribute stride. This avoids fixed-color
-  data being interpreted with a generic attribute stride.
+- The Valhall malloc-IDVS allocation now includes fixed-function varying slots
+  in `vertex_attribute_stride` as well as `vertex_packet_stride`. This fixes the
+  long-standing glxgears corruption where individual red, green, and blue teeth
+  borrowed the wrong color or lighting data.
 - The shared tiler heap starts at its actual base, matching upstream Mesa.
   This reverts the fork-only `base + 64` bottom pointer that corrupted earlier
   lit geometry when a later IDVS draw was completely removed by face culling.
@@ -444,27 +489,35 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
   textures use more memory and bandwidth than BCn. This fixes correctness for
   SuperTuxKart without claiming native compressed-texture acceleration.
 - The asynchronous Job Manager path can still report atom event `0x58` during
-  longer GLX workloads. Use `PAN_MESA_DEBUG=sync` when correctness matters.
+  longer GLX workloads. `batchsync` reduces synchronization overhead but is
+  still experimental; use `PAN_MESA_DEBUG=sync` when correctness matters.
 - Reliable presentation still requests a full-frame copy inside Termux:X11.
-  The GLX and EGL DRI3 paths eliminate Panfork's client-side readback/upload,
-  but the tested X server did not GPU-offload its final copy. Strict no-copy
-  Present (`PAN_MALI_X11_DRI3_ZERO_COPY=1`) negotiates successfully but
-  produces an invisible window under the tested GNOME/Mutter session.
+  The ordinary DMA-heap source is not GPU-offloaded; the AHardwareBuffer route
+  makes GPU blitting possible and is about 4.6 times faster in the recorded
+  Firefox Present comparison, but Mutter plus final X11 composition still
+  drops about half the frames of a 360p stream. Strict no-copy Present
+  (`PAN_MALI_X11_DRI3_ZERO_COPY=1`) negotiates successfully but produces an
+  invisible window under the tested GNOME/Mutter session.
+- Mutter exits with `SIGBUS` if GNOME Shell's own display targets use the AHB
+  route. Keep GNOME on `PAN_MALI_X11_DRI3=0` and opt individual clients into
+  AHB until imported-buffer CPU mapping is fixed.
 - G78 AFBC is disabled; swap control is deferred; resizing, suspend/resume,
   multisampling, audio integration, input devices, long stability runs, and a
   complete desktop session remain incomplete.
 - `MESA-LOADER: failed to retrieve device information` is expected because
   `/dev/mali0` is Kbase, not a DRM render node.
-- The MediaCodec bridge is H.264-only and CPU-copies decoded NV12 frames over a
-  Unix socket into exportable DMA-heap VA surfaces. FFmpeg readback is verified
-  pixel-exact, Firefox's two EGL imports are zero-copy, and X11 EGL DRI3
-  presentation is visibly working. Decode transport is still not end-to-end
-  zero-copy because MediaCodec output crosses the Unix socket as CPU data.
+- The MediaCodec bridge is H.264-only. GStreamer still receives decoded NV12
+  through the Unix socket. The VA path instead registers each exportable
+  DMA-heap surface with the native service through `SCM_RIGHTS`; the service
+  copies Codec2's CPU-readable output directly into that surface, avoiding the
+  raw-frame socket copy but not the remaining MediaCodec-to-DMA-BUF CPU copy.
+  Firefox's two subsequent EGL imports are zero-copy.
 - The dedicated Firefox profile disables VP9 and AV1 so YouTube requests H.264.
-  The tested local low-delay H.264 file is hardware-decoded and visible, but
-  the tested YouTube AVC stream currently falls back to software: Exynos
-  Codec2 holds several display-order outputs while Firefox synchronizes the
-  first VA surface before it can submit the required future pictures.
+  The tested local low-delay file and the tested YouTube AVC stream are both
+  hardware-decoded and visible. YouTube currently relies on the experimental
+  deferred-export path because Exynos Codec2 holds several display-order
+  outputs before returning the first frame; there is no explicit release fence
+  between the later CPU write and Firefox's already-imported DMA-BUF.
 - The Yorushika YouTube checkpoint visibly renders Japanese text after adding
   Noto CJK. Stats for nerds reports AVC at 640x360@24 and 909 dropped frames out
   of 4078 at capture time. Toggling the stats context action caused a roughly

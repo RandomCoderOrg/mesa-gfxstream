@@ -262,6 +262,13 @@ swrastPutImage2(__DRIdrawable *draw, int op,
 
 #ifdef HAVE_DRI3
 static bool
+swrastTracePresent(void)
+{
+   const char *value = getenv("PAN_MALI_X11_DRI3_TRACE");
+   return value && *value && strcmp(value, "0") != 0;
+}
+
+static bool
 swrastReapPresentEvent(struct dri2_egl_surface *dri2_surf,
                        struct dri2_egl_display *dri2_dpy,
                        bool block, unsigned *released_mask)
@@ -277,6 +284,10 @@ swrastReapPresentEvent(struct dri2_egl_surface *dri2_surf,
          return false;
 
       xcb_present_generic_event_t *generic = (void *)event;
+      if (swrastTracePresent())
+         fprintf(stderr,
+                 "tensor-dri3: event type=%u block=%u in-flight=%u\n",
+                 generic->evtype, block, dri2_surf->present_in_flight);
       if (generic->evtype == XCB_PRESENT_EVENT_IDLE_NOTIFY) {
          xcb_pixmap_t pixmap =
             ((xcb_present_idle_notify_event_t *)event)->pixmap;
@@ -288,6 +299,11 @@ swrastReapPresentEvent(struct dri2_egl_surface *dri2_surf,
                dri2_surf->present_pixmaps[i] = XCB_NONE;
                dri2_surf->present_in_flight--;
                *released_mask |= BITFIELD_BIT(i);
+               if (swrastTracePresent())
+                  fprintf(stderr,
+                          "tensor-dri3: idle pixmap=%u slot=%u "
+                          "in-flight=%u\n",
+                          pixmap, i, dri2_surf->present_in_flight);
                free(event);
                return true;
             }
@@ -413,6 +429,11 @@ swrastPutImageDmaBuf(__DRIdrawable *draw, int fd, int w, int h,
    }
 
    xcb_flush(dri2_dpy->conn);
+   if (swrastTracePresent())
+      fprintf(stderr,
+              "tensor-dri3: present serial=%u pixmap=%u slot=%u "
+              "in-flight=%u options=0x%x\n",
+              serial, pixmap, slot, dri2_surf->present_in_flight, options);
    *out_slot = slot;
    return GL_TRUE;
 }

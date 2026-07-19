@@ -63,6 +63,10 @@ struct panfrost_resource {
 
         struct renderonly_scanout *scanout;
 
+        /* Rootless Android AHardwareBuffer broker allocation.  The broker
+         * owns the Android object; Kbase imports its data DMA-BUF. */
+        uint32_t tensor_ahb_id;
+
         struct panfrost_resource *separate_stencil;
 
         struct util_range valid_buffer_range;

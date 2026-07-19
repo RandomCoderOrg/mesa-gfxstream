@@ -7,12 +7,18 @@
 #define TMC_VERSION 1u
 #define TMC_MAX_PAYLOAD (16u * 1024u * 1024u)
 
+#define TMC_CAP_SHARED_SURFACE (1u << 0)
+#define TMC_FRAME_FLAG_SHARED_SURFACE (1u << 31)
+
 enum tmc_message_type {
    TMC_CONFIG = 1,
    TMC_PACKET = 2,
    TMC_INPUT_EOS = 3,
    /* Drain currently available output without ending the decoder session. */
    TMC_DRAIN = 4,
+   /* Register a DMA-BUF destination for the frame identified by pts_us.
+    * arg0/arg1/arg2 carry stride, slice height, and mapped byte size. */
+   TMC_SURFACE = 5,
    TMC_READY = 101,
    TMC_FORMAT = 102,
    TMC_FRAME = 103,

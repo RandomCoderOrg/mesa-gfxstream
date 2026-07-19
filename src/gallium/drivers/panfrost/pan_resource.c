@@ -31,11 +31,18 @@
  */
 
 #include <xf86drm.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <linux/dma-heap.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 #include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/drm.h"
 
@@ -54,7 +61,191 @@
 #include "pan_resource.h"
 #include "pan_util.h"
 #include "pan_tiling.h"
+#include "tensor_ahb_protocol.h"
 #include "decode.h"
+
+static bool
+tensor_ahb_enabled(void)
+{
+        const char *enabled = getenv("PAN_MALI_X11_AHB");
+        return enabled && enabled[0] && strcmp(enabled, "0");
+}
+
+static bool
+tensor_ahb_debug(void)
+{
+        const char *enabled = getenv("PAN_MALI_X11_AHB_DEBUG");
+        return enabled && enabled[0] && strcmp(enabled, "0");
+}
+
+static int
+tensor_ahb_connect(void)
+{
+        const char *path = getenv("TENSOR_AHB_SOCKET");
+        if (!path || !path[0])
+                path = TENSOR_AHB_SOCKET_DEFAULT;
+        if (strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path))
+                return -1;
+
+        int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+        if (fd < 0)
+                return -1;
+
+        struct sockaddr_un address = {.sun_family = AF_UNIX};
+        strcpy(address.sun_path, path);
+        if (connect(fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+                close(fd);
+                return -1;
+        }
+        return fd;
+}
+
+static bool
+tensor_ahb_exchange(struct tensor_ahb_message *message, int sent_fd,
+                    int *received_fd)
+{
+        int socket_fd = tensor_ahb_connect();
+        if (socket_fd < 0)
+                return false;
+
+        message->magic = TENSOR_AHB_MAGIC;
+        message->version = TENSOR_AHB_VERSION;
+        struct iovec iov = {
+                .iov_base = message,
+                .iov_len = sizeof(*message),
+        };
+        char control[CMSG_SPACE(sizeof(int))] = {0};
+        struct msghdr header = {
+                .msg_iov = &iov,
+                .msg_iovlen = 1,
+        };
+        if (sent_fd >= 0) {
+                header.msg_control = control;
+                header.msg_controllen = sizeof(control);
+                struct cmsghdr *cmsg = CMSG_FIRSTHDR(&header);
+                cmsg->cmsg_level = SOL_SOCKET;
+                cmsg->cmsg_type = SCM_RIGHTS;
+                cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+                memcpy(CMSG_DATA(cmsg), &sent_fd, sizeof(sent_fd));
+        }
+
+        ssize_t result;
+        do {
+                result = sendmsg(socket_fd, &header, MSG_NOSIGNAL);
+        } while (result < 0 && errno == EINTR);
+        if (result != (ssize_t)sizeof(*message)) {
+                close(socket_fd);
+                return false;
+        }
+
+        memset(message, 0, sizeof(*message));
+        memset(control, 0, sizeof(control));
+        header.msg_control = control;
+        header.msg_controllen = sizeof(control);
+        do {
+                result = recvmsg(socket_fd, &header, MSG_CMSG_CLOEXEC);
+        } while (result < 0 && errno == EINTR);
+        close(socket_fd);
+        if (result != (ssize_t)sizeof(*message) ||
+            message->magic != TENSOR_AHB_MAGIC ||
+            message->version != TENSOR_AHB_VERSION ||
+            message->type != TENSOR_AHB_RESPONSE || message->status)
+                return false;
+
+        if (received_fd) {
+                *received_fd = -1;
+                for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&header); cmsg;
+                     cmsg = CMSG_NXTHDR(&header, cmsg)) {
+                        if (cmsg->cmsg_level == SOL_SOCKET &&
+                            cmsg->cmsg_type == SCM_RIGHTS &&
+                            cmsg->cmsg_len >= CMSG_LEN(sizeof(int))) {
+                                memcpy(received_fd, CMSG_DATA(cmsg),
+                                       sizeof(*received_fd));
+                                break;
+                        }
+                }
+        }
+        return true;
+}
+
+static void
+tensor_ahb_release(uint32_t id)
+{
+        if (!id)
+                return;
+        struct tensor_ahb_message message = {
+                .type = TENSOR_AHB_RELEASE,
+                .id = id,
+        };
+        tensor_ahb_exchange(&message, -1, NULL);
+}
+
+static bool
+tensor_ahb_allocate(struct panfrost_resource *resource,
+                    const struct pipe_resource *template, int *dma_buf_fd)
+{
+        if (!tensor_ahb_enabled() || template->target != PIPE_TEXTURE_2D ||
+            template->last_level || template->depth0 != 1 ||
+            template->array_size != 1 || template->nr_samples > 1 ||
+            util_format_get_blocksize(template->format) != 4)
+                return false;
+
+        struct tensor_ahb_message message = {
+                .type = TENSOR_AHB_ALLOCATE,
+                .width = template->width0,
+                .height = template->height0,
+                .format = 5, /* HAL_PIXEL_FORMAT_BGRA_8888 */
+        };
+        int fd = -1;
+        if (!tensor_ahb_exchange(&message, -1, &fd) || fd < 0 ||
+            message.width != template->width0 ||
+            message.height != template->height0 || message.format != 5 ||
+            message.stride < template->width0 ||
+            message.stride > UINT32_MAX / 4 ||
+            message.data_size < message.stride * 4ull * message.height) {
+                if (fd >= 0)
+                        close(fd);
+                tensor_ahb_release(message.id);
+                return false;
+        }
+
+        unsigned row_stride = message.stride * 4;
+        unsigned surface_size = row_stride * message.height;
+        resource->image.layout.slices[0].row_stride = row_stride;
+        resource->image.layout.slices[0].surface_stride = surface_size;
+        resource->image.layout.slices[0].size = surface_size;
+        resource->image.layout.array_stride = surface_size;
+        resource->image.layout.data_size = message.data_size;
+        resource->tensor_ahb_id = message.id;
+        *dma_buf_fd = fd;
+        if (tensor_ahb_debug())
+                fprintf(stderr,
+                        "tensor-ahb: Mesa allocation id=%u %ux%u stride=%u size=%u\n",
+                        message.id, message.width, message.height,
+                        row_stride, message.data_size);
+        return true;
+}
+
+static int
+tensor_ahb_present_fd(uint32_t id)
+{
+        int sockets[2];
+        if (!id || socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0,
+                              sockets) < 0)
+                return -1;
+
+        struct tensor_ahb_message message = {
+                .type = TENSOR_AHB_PRESENT,
+                .id = id,
+        };
+        bool success = tensor_ahb_exchange(&message, sockets[1], NULL);
+        close(sockets[1]);
+        if (!success) {
+                close(sockets[0]);
+                return -1;
+        }
+        return sockets[0];
+}
 
 /* The kbase kernel driver always maps imported BOs with caching. When we
  * don't want that, instead do mmap from the display driver side to get a
@@ -207,7 +398,11 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
         } else if (handle->type == WINSYS_HANDLE_TYPE_KMS) {
                 handle->handle = rsrc->image.data.bo->gem_handle;
         } else if (handle->type == WINSYS_HANDLE_TYPE_FD) {
-                int fd = panfrost_bo_export(rsrc->image.data.bo);
+                int fd = tensor_ahb_present_fd(rsrc->tensor_ahb_id);
+                if (fd >= 0)
+                        handle->modifier = TENSOR_AHB_DRI3_MODIFIER;
+                else
+                        fd = panfrost_bo_export(rsrc->image.data.bo);
 
                 if (fd < 0)
                         return false;
@@ -776,6 +971,21 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                 };
                 int heap_fd;
 
+                int ahb_fd = -1;
+                if (tensor_ahb_allocate(so, template, &ahb_fd)) {
+                        so->image.data.bo = panfrost_bo_import(dev, ahb_fd);
+                        close(ahb_fd);
+                        if (!so->image.data.bo) {
+                                fprintf(stderr,
+                                        "Panfork DRI3 AHardwareBuffer Kbase import failed\n");
+                                tensor_ahb_release(so->tensor_ahb_id);
+                                free(so);
+                                return NULL;
+                        }
+                        so->constant_stencil = true;
+                        goto resource_allocated;
+                }
+
                 if (!heap_name || !heap_name[0])
                         heap_name = "system";
 
@@ -825,6 +1035,7 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                 so->constant_stencil = true;
         }
 
+resource_allocated:
         if (drm_is_afbc(so->image.layout.modifier))
                 panfrost_resource_init_afbc_headers(so);
 
@@ -890,6 +1101,8 @@ panfrost_resource_destroy(struct pipe_screen *screen,
 
         if (rsrc->image.data.bo)
                 panfrost_bo_unreference(rsrc->image.data.bo);
+
+        tensor_ahb_release(rsrc->tensor_ahb_id);
 
         free(rsrc->index_cache);
         free(rsrc->damage.tile_map.data);

@@ -11,14 +11,15 @@ process in Termux. A GStreamer element in Jammy sends compressed access units
 over the `/tmp` directory shared by uDroid and Termux, then receives
 CPU-readable NV12 frames. The VA-API frontend additionally repackages the
 picture/slice buffers emitted by FFmpeg, synthesizes the required Annex-B H.264
-parameter sets, and stores returned frames in exportable Android DMA-heap
-buffers.
+parameter sets, and registers exportable Android DMA-heap destinations with the
+native service using `SCM_RIGHTS`.
 
 > [!WARNING]
-> This is a proof-of-function prototype. Decoded frames are copied out of
-> MediaCodec, through a Unix socket, and again into tightly packed GStreamer
-> buffers. The protocol is local, host-endian, H.264-only, and not hardened for
-> untrusted clients.
+> This is a proof-of-function prototype. GStreamer frames are copied out of
+> MediaCodec and through a Unix socket. The VA path avoids that raw-frame socket
+> transfer, but still CPU-copies MediaCodec output into a registered DMA-BUF.
+> The protocol is local, host-endian, H.264-only, and not hardened for untrusted
+> clients.
 
 ## Architecture
 
@@ -35,8 +36,9 @@ flowchart LR
     GPU -->|"CPU-readable padded NV12"| SVC
     SVC -->|"raw frame copy"| SOCK
     SOCK -->|"crop stride and slice padding"| GST
-    SOCK -->|"padded NV12 copy"| VA
-    VA --> HEAP["/dev/dma_heap/system\nDRM-PRIME export"]
+    VA -->|"register DMA-BUF with SCM_RIGHTS"| SVC
+    SVC -->|"one CPU copy into immutable layout"| HEAP["/dev/dma_heap/system\nDRM-PRIME export"]
+    VA --> HEAP
     GST -->|"tightly packed NV12"| APP
     HEAP --> APP
 ```
@@ -55,10 +57,11 @@ library using `dlopen` and `dlsym`.
 | `mediacodec-probe.c` | Termux/Bionic | Configure/start/stop codec discovery |
 | `mediacodec-decode.c` | Termux/Bionic | Standalone Annex-B decode smoke |
 | `mediacodec-service.c` | Termux/Bionic | Persistent single-client-at-a-time socket service |
-| `bridge-protocol.h` | Both ABIs | Versioned 40-byte local message header |
+| `bridge-protocol.h` | Both ABIs | Versioned 40-byte local message header and shared-surface capability |
 | `bridge-client.c` | Jammy/glibc | End-to-end bridge validation client |
 | `gsttensorh264dec.c` | Jammy/glibc | GStreamer `GstVideoDecoder` element |
 | `va/tensor_drv_video.c` | Jammy/glibc | H.264 VA-API frontend for FFmpeg and stock Firefox |
+| `video-benchmark.html` | Jammy browser | Local playback page with one-second decoded/dropped-frame counters |
 
 ## Build the native Android side
 
@@ -202,6 +205,7 @@ Optional environment variables:
 | `TENSOR_MEDIACODEC_INBAND_CSD` | unset | Standalone decoder uses in-band SPS/PPS |
 | `TENSOR_VA_DMA_HEAP` | `system` | DMA heap used for VA decode surfaces |
 | `TENSOR_VA_DEBUG` | unset | Log VA surface creation, decode, and export calls |
+| `TENSOR_VA_DEFERRED_EXPORT` | `1` in the Firefox wrapper | Export a preinitialized VA DMA-BUF before Exynos returns its delayed frame; set `0` for strict synchronous behavior |
 
 ## Pixel 6a results
 
@@ -230,12 +234,22 @@ The two-second 1920x1080 60 FPS H.264 stream produced these checkpoints:
   and the renderer imported both planes again. Firefox logged zero-copy
   `EGLImageTargetTexture2D` success for all four imports.
 - The tested local 1920x1080 60 FPS H.264 file visibly played through that
-  hardware path. The tested YouTube stream is a separate unresolved case: it
-  defaults to software VP9; after forcing AVC, Firefox initializes hardware
-  VA-API but `c2.exynos.h264.decoder` holds multiple output pictures. Firefox
-  synchronizes the first VA surface before it can submit that many future
-  pictures, `vaExportSurfaceHandle` times out, and Firefox falls back to
-  software H.264. Page and video presentation remain visible and responsive.
+  hardware path. The dedicated Firefox profile also forced the tested YouTube
+  stream from VP9 to AVC. Exynos delays its first output until five access
+  units have been submitted, so the VA frontend now supports an opt-in
+  deferred export: Firefox imports a black-initialized DMA-BUF immediately and
+  the matching MediaCodec output fills it later by PTS.
+- The Yorushika YouTube run crossed from 640x368 coded output to 864x480 while
+  remaining on hardware decode. Exynos initially reported a 896-byte pitch at
+  480p and then changed to 864 bytes. VA surfaces therefore retain an immutable
+  64-pixel-aligned pitch and the driver row-repacks each returned NV12 frame.
+  A 4,672-frame run, including 4,667 480p frames that required 864-to-896 pitch
+  normalization and three Firefox process-flush events, recorded no VA
+  sync/export failure, packet error, GPU timeout, or software-decoder fallback.
+- The VA frontend and service now negotiate `TMC_CAP_SHARED_SURFACE`. Each VA
+  DMA-BUF is registered by PTS, and the service writes Codec2's returned NV12
+  data directly into it. This removes the raw decoded-frame socket payload and
+  duplicate VA-side copy while preserving the existing GStreamer protocol.
 
 The captured Yorushika run shows the post-recovery UI after enabling YouTube's
 Stats for nerds. Noto CJK fixes the previously missing Japanese title glyphs:
@@ -246,9 +260,10 @@ At capture time YouTube reported codec `avc1.4d401e`, 640x360@24 current and
 optimal resolution, and 909 dropped frames out of 4078. Opening/toggling the
 Stats for nerds context action caused a significant transient stutter, hang,
 and visual glitch; playback recovered after about three seconds. The matching
-Firefox trace recorded three `vaExportSurfaceHandle` failures and software
-fallback, so the screenshot must not be read as sustained hardware decoding.
-The launch flags, counters, and decisive trace excerpt are preserved in
+The earlier Firefox trace recorded three `vaExportSurfaceHandle` failures and
+software fallback, so that screenshot remains a historical pre-fix checkpoint
+rather than evidence for the newer sustained run. The old launch flags,
+counters, and decisive trace excerpt are preserved in
 [`logs/firefox-youtube-yorushika-debug.txt`](../logs/firefox-youtube-yorushika-debug.txt).
 - GNOME Web 42.4: `tensorh264dec` selected by WebKit/GStreamer and the 1080p60
   test pattern visibly painted under Panfrost when launched through
@@ -275,22 +290,24 @@ display the hardware-decoded 1080p60 pattern.
 - No flush, seek, mid-stream reconfiguration, resolution change, or recovery
   after a client disconnects mid-frame. WebKit's HTML loop can consequently
   discard a few delayed frames at the end of each two-second test cycle.
-- Every decoded frame is copied out of MediaCodec, over the socket, and into a
-  new GStreamer NV12 buffer. The 1080p60 smoke moves roughly 373 MB in two
-  seconds before display/compositor copies.
-- VA surfaces are allocated from `/dev/dma_heap/system` and export a standard
-  DRM-PRIME NV12 descriptor, but MediaCodec output still crosses the socket as
-  a CPU copy. The VA driver wraps that CPU write in `DMA_BUF_IOCTL_SYNC` before
-  Panfrost samples it. Direct MediaCodec output into those buffers is future
-  work.
+- Every GStreamer frame is copied out of MediaCodec, over the socket, and into
+  a new NV12 buffer. The 1080p60 smoke moves roughly 373 MB in two seconds
+  before display/compositor copies.
+- VA surfaces are allocated from `/dev/dma_heap/system`, registered with the
+  native service, and exported as standard DRM-PRIME NV12 descriptors. The
+  service writes Codec2's CPU-readable output directly into that DMA-BUF under
+  `DMA_BUF_IOCTL_SYNC`, so raw video no longer crosses the socket on Firefox's
+  VA path. Direct MediaCodec output into the surface remains future work.
 - Stock Firefox reaches and decodes through the VA driver only with its RDD
   sandbox disabled. It uses X11 EGL plus this fork's reusable DMA-BUF/DRI3
   presentation callback; forcing GLX disables Firefox's VA-API feature path.
-- Long-form/streaming H.264 can hit a MediaCodec/VA synchronization mismatch.
-  The Exynos Codec2 decoder queues several display-order outputs, while VA asks
-  this bridge to synchronize the first target surface immediately. The local
-  low-delay smoke works; the tested YouTube AVC stream currently falls back to
-  software after its first hardware submission.
+- Firefox streaming uses a deliberately dirty deferred-export workaround for
+  Exynos Codec2's fixed output delay. The DMA-BUF is exported before its frame
+  is ready and later filled by PTS; there is no explicit MediaCodec-to-Firefox
+  release fence. It passed the tested 4,672-frame YouTube run, but it is not an
+  upstream-quality VA synchronization model and needs broader resolution,
+  seek, suspend/resume, and long-duration coverage.
 - GNOME Web/GStreamer works through the bridge when WebKit's DRM/GBM-based
   DMA-BUF renderer is disabled. The legacy WebKit renderer still composes with
-  Panfrost, but decoded NV12 frames continue to cross the socket as CPU copies.
+  Panfrost, but its GStreamer-decoded NV12 frames continue to cross the socket
+  as CPU copies.

@@ -23,6 +23,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <va/va_backend.h>
@@ -40,6 +41,7 @@
 #define TENSOR_MAX_SURFACES 64
 #define TENSOR_MAX_CONTEXTS 16
 #define TENSOR_MAX_BUFFERS 256
+#define TENSOR_MAX_DECODE_BUFFERS 192
 #define TENSOR_MAX_IMAGES 64
 
 struct tensor_va_config {
@@ -50,6 +52,8 @@ struct tensor_va_config {
 
 struct tensor_va_surface {
    bool used;
+   bool exported_before_ready;
+   bool destroy_pending;
    unsigned width;
    unsigned height;
    unsigned stride;
@@ -82,6 +86,7 @@ struct tensor_va_context {
    unsigned output_height;
    unsigned output_stride;
    unsigned output_slice_height;
+   uint32_t service_caps;
 };
 
 struct tensor_va_buffer {
@@ -154,6 +159,22 @@ tensor_debug_enabled(void)
 }
 
 static bool
+tensor_deferred_export_enabled(void)
+{
+   const char *value = getenv("TENSOR_VA_DEFERRED_EXPORT");
+   return value && *value && strcmp(value, "0") != 0;
+}
+
+static uint64_t
+tensor_monotonic_us(void)
+{
+   struct timespec now;
+   if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+      return 0;
+   return (uint64_t)now.tv_sec * 1000000u + (uint64_t)now.tv_nsec / 1000u;
+}
+
+static bool
 tensor_dma_buf_sync(int fd, uint64_t flags)
 {
    struct dma_buf_sync sync = {.flags = flags};
@@ -170,13 +191,27 @@ tensor_dma_buf_sync(int fd, uint64_t flags)
    return result == 0;
 }
 
+static void tensor_release_surface(struct tensor_va_surface *surface);
+
 static bool
 tensor_allocate_surface(struct tensor_va_surface *surface, unsigned width,
                         unsigned height)
 {
-   if (!width || !height || width > SIZE_MAX / height)
+   /*
+    * Exynos decoders write into a padded NV12 layout.  In particular, an
+    * 864x480 H.264 picture is reported by Codec2 with a 896-byte stride.
+    * Deferred export happens before that output format arrives, so allocate
+    * and describe the hardware layout up front rather than exporting a
+    * too-small 864-byte-pitch buffer that Codec2 cannot fill safely.
+    */
+   if (!width || !height || width > UINT_MAX - 63u ||
+       height > UINT_MAX - 15u)
       return false;
-   size_t pixels = (size_t)width * height;
+   unsigned stride = (width + 63u) & ~63u;
+   unsigned slice_height = (height + 15u) & ~15u;
+   if ((size_t)stride > SIZE_MAX / slice_height)
+      return false;
+   size_t pixels = (size_t)stride * slice_height;
    if (pixels > SIZE_MAX - pixels / 2)
       return false;
    size_t bytes = pixels + pixels / 2;
@@ -217,11 +252,23 @@ tensor_allocate_surface(struct tensor_va_surface *surface, unsigned width,
 
    surface->width = width;
    surface->height = height;
-   surface->stride = width;
-   surface->slice_height = height;
+   surface->stride = stride;
+   surface->slice_height = slice_height;
    surface->dma_fd = (int)allocation.fd;
    surface->data = mapping;
    surface->data_size = allocation_size;
+   if (!tensor_dma_buf_sync(surface->dma_fd,
+                            DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE)) {
+      tensor_release_surface(surface);
+      return false;
+   }
+   memset(surface->data, 16, pixels);
+   memset(surface->data + pixels, 128, pixels / 2);
+   if (!tensor_dma_buf_sync(surface->dma_fd,
+                            DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE)) {
+      tensor_release_surface(surface);
+      return false;
+   }
    return true;
 }
 
@@ -286,6 +333,45 @@ tensor_send_message(int fd, uint16_t type, int64_t pts_us, uint32_t arg0,
    return tensor_transfer(fd, &message, sizeof(message), true) &&
           (!payload_size ||
            tensor_transfer(fd, (void *)payload, payload_size, true));
+}
+
+static bool
+tensor_send_shared_surface(int fd, int64_t pts_us,
+                           const struct tensor_va_surface *surface)
+{
+   if (surface->data_size > UINT32_MAX)
+      return false;
+   struct tmc_message message = {
+      .magic = TMC_MAGIC,
+      .version = TMC_VERSION,
+      .type = TMC_SURFACE,
+      .pts_us = pts_us,
+      .arg0 = surface->stride,
+      .arg1 = surface->slice_height,
+      .arg2 = (uint32_t)surface->data_size,
+   };
+   struct iovec iov = {
+      .iov_base = &message,
+      .iov_len = sizeof(message),
+   };
+   char control[CMSG_SPACE(sizeof(int))] = {0};
+   struct msghdr msg = {
+      .msg_iov = &iov,
+      .msg_iovlen = 1,
+      .msg_control = control,
+      .msg_controllen = sizeof(control),
+   };
+   struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+   cmsg->cmsg_level = SOL_SOCKET;
+   cmsg->cmsg_type = SCM_RIGHTS;
+   cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+   memcpy(CMSG_DATA(cmsg), &surface->dma_fd, sizeof(surface->dma_fd));
+
+   ssize_t sent;
+   do {
+      sent = sendmsg(fd, &msg, MSG_NOSIGNAL);
+   } while (sent < 0 && errno == EINTR);
+   return sent == (ssize_t)sizeof(message);
 }
 
 static bool
@@ -594,26 +680,91 @@ tensor_store_frame(struct tensor_va_driver *driver,
       struct tensor_va_surface *surface = &driver->surfaces[i];
       if (!surface->used || surface->pts_us != message->pts_us)
          continue;
-      if (message->payload_size > surface->data_size)
+      if (message->flags & TMC_FRAME_FLAG_SHARED_SURFACE) {
+         size_t destination_y_size =
+            (size_t)surface->stride * surface->slice_height;
+         surface->frame_size =
+            destination_y_size + destination_y_size / 2;
+         surface->status = VASurfaceReady;
+         if (tensor_debug_enabled())
+            fprintf(stderr,
+                    "tensor-va: shared surface ready pts=%lld bytes=%zu\n",
+                    (long long)message->pts_us, surface->frame_size);
+         if (surface->destroy_pending)
+            tensor_release_surface(surface);
+         return true;
+      }
+      unsigned source_stride = context->output_stride;
+      unsigned source_slice_height = context->output_slice_height;
+      if (!source_stride || !source_slice_height ||
+          (size_t)source_stride > SIZE_MAX / source_slice_height)
+         return false;
+      size_t source_y_size = (size_t)source_stride * source_slice_height;
+      if (source_y_size > message->payload_size)
+         return false;
+      size_t destination_y_size =
+         (size_t)surface->stride * surface->slice_height;
+      if (destination_y_size > surface->data_size ||
+          destination_y_size > SIZE_MAX - destination_y_size / 2 ||
+          destination_y_size + destination_y_size / 2 > surface->data_size)
          return false;
       if (message->payload_size) {
          if (!tensor_dma_buf_sync(surface->dma_fd,
                                   DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE))
             return false;
-         memcpy(surface->data, payload, message->payload_size);
+         /*
+          * Codec2 may change its output pitch after the first buffers (the
+          * Tensor H.264 decoder has emitted both 896- and 864-byte rows for
+          * one 864x480 stream).  The DMA-BUF descriptor may already be in
+          * Firefox, so repack every frame into the surface's immutable layout.
+          */
+         memset(surface->data, 16, destination_y_size);
+         memset(surface->data + destination_y_size, 128,
+                destination_y_size / 2);
+         unsigned luma_rows = source_slice_height < surface->slice_height
+                                 ? source_slice_height
+                                 : surface->slice_height;
+         size_t row_bytes = source_stride < surface->stride
+                               ? source_stride
+                               : surface->stride;
+         for (unsigned row = 0; row < luma_rows; row++) {
+            memcpy(surface->data + (size_t)row * surface->stride,
+                   payload + (size_t)row * source_stride, row_bytes);
+         }
+         size_t source_uv_size = message->payload_size - source_y_size;
+         unsigned chroma_rows = source_slice_height / 2;
+         if (chroma_rows > surface->slice_height / 2)
+            chroma_rows = surface->slice_height / 2;
+         for (unsigned row = 0; row < chroma_rows; row++) {
+            size_t source_offset = (size_t)row * source_stride;
+            if (source_offset >= source_uv_size)
+               break;
+            size_t available = source_uv_size - source_offset;
+            size_t copy_bytes = row_bytes < available ? row_bytes : available;
+            memcpy(surface->data + destination_y_size +
+                      (size_t)row * surface->stride,
+                   payload + source_y_size + source_offset, copy_bytes);
+         }
          if (!tensor_dma_buf_sync(surface->dma_fd,
                                   DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE))
             return false;
       }
-      surface->frame_size = message->payload_size;
-      surface->stride = context->output_stride;
-      surface->slice_height = context->output_slice_height;
+      surface->frame_size = destination_y_size + destination_y_size / 2;
       surface->status = VASurfaceReady;
       if (tensor_debug_enabled())
          fprintf(stderr,
-                 "tensor-va: decoded pts=%lld bytes=%u stride=%u slice=%u\n",
+                 "tensor-va: decoded pts=%lld bytes=%u source=%ux%u "
+                 "surface=%ux%u\n",
                  (long long)message->pts_us, message->payload_size,
-                 surface->stride, surface->slice_height);
+                 source_stride, source_slice_height, surface->stride,
+                 surface->slice_height);
+      if (surface->destroy_pending) {
+         if (tensor_debug_enabled())
+            fprintf(stderr,
+                    "tensor-va: release deferred surface pts=%lld\n",
+                    (long long)message->pts_us);
+         tensor_release_surface(surface);
+      }
       return true;
    }
    if (tensor_debug_enabled())
@@ -638,6 +789,8 @@ tensor_process_until(struct tensor_va_driver *driver,
          context->output_stride = message.arg2 ? message.arg2 : message.arg0;
          context->output_slice_height =
             message.arg3 ? message.arg3 : message.arg1;
+      } else if (message.type == TMC_READY) {
+         context->service_caps = message.arg3;
       } else if (message.type == TMC_FRAME) {
          ok = tensor_store_frame(driver, context, &message, payload);
       }
@@ -887,6 +1040,16 @@ tensor_destroy_surfaces(VADriverContextP ctx, VASurfaceID *surfaces,
       struct tensor_va_surface *surface = tensor_surface(driver, surfaces[i]);
       if (!surface)
          return VA_STATUS_ERROR_INVALID_SURFACE;
+      if (tensor_deferred_export_enabled() &&
+          surface->exported_before_ready &&
+          surface->status != VASurfaceReady) {
+         surface->destroy_pending = true;
+         if (tensor_debug_enabled())
+            fprintf(stderr,
+                    "tensor-va: retain deferred surface=%u pts=%lld\n",
+                    surfaces[i], (long long)surface->pts_us);
+         continue;
+      }
       tensor_release_surface(surface);
    }
    return VA_STATUS_SUCCESS;
@@ -950,7 +1113,13 @@ tensor_create_buffer(VADriverContextP ctx, VAContextID context_id,
        !tensor_context(driver, context_id) || size > SIZE_MAX / num_elements)
       return VA_STATUS_ERROR_INVALID_PARAMETER;
 
-   for (unsigned i = 0; i < TENSOR_MAX_BUFFERS; i++) {
+   /*
+    * Keep decoder parameter/slice buffers separate from VAImage backing
+    * buffers.  FFmpeg decodes and downloads frames on different threads; a
+    * shared first-free allocator lets both paths observe the same free slot
+    * and publish the same VABufferID concurrently.
+    */
+   for (unsigned i = 0; i < TENSOR_MAX_DECODE_BUFFERS; i++) {
       if (driver->buffers[i].used)
          continue;
       size_t bytes = (size_t)size * num_elements;
@@ -1032,6 +1201,8 @@ tensor_begin_picture(VADriverContextP ctx, VAContextID context_id,
    context->have_first_slice = false;
    context->pps_id = 0;
    surface->pts_us = -1;
+   surface->exported_before_ready = false;
+   surface->destroy_pending = false;
    surface->status = VASurfaceRendering;
    return VA_STATUS_SUCCESS;
 }
@@ -1081,6 +1252,7 @@ tensor_render_picture(VADriverContextP ctx, VAContextID context_id,
 static VAStatus
 tensor_end_picture(VADriverContextP ctx, VAContextID context_id)
 {
+   uint64_t started_us = tensor_debug_enabled() ? tensor_monotonic_us() : 0;
    struct tensor_va_driver *driver = ctx->pDriverData;
    struct tensor_va_context *context = tensor_context(driver, context_id);
    if (!context || context->current_target == VA_INVALID_ID)
@@ -1105,14 +1277,22 @@ tensor_end_picture(VADriverContextP ctx, VAContextID context_id)
 
    int64_t pts_us = ((int64_t)context->submitted_frames + 1) * 1000;
    surface->pts_us = pts_us;
-   bool sent = tensor_send_message(context->socket_fd, TMC_PACKET, pts_us, 0,
-                                   0, 0, packet, (uint32_t)packet_size);
+   bool sent = true;
+   if (context->service_caps & TMC_CAP_SHARED_SURFACE)
+      sent = tensor_send_shared_surface(context->socket_fd, pts_us, surface);
+   if (sent)
+      sent = tensor_send_message(context->socket_fd, TMC_PACKET, pts_us, 0,
+                                 0, 0, packet, (uint32_t)packet_size);
    free(packet);
    if (!sent || !tensor_process_until(driver, context, TMC_ACK))
       return VA_STATUS_ERROR_OPERATION_FAILED;
 
    context->current_target = VA_INVALID_ID;
    context->submitted_frames++;
+   if (tensor_debug_enabled())
+      fprintf(stderr, "tensor-va: end-picture pts=%lld elapsed-us=%llu\n",
+              (long long)pts_us,
+              (unsigned long long)(tensor_monotonic_us() - started_us));
    return VA_STATUS_SUCCESS;
 }
 
@@ -1271,7 +1451,7 @@ tensor_create_image(VADriverContextP ctx, VAImageFormat *format, int width,
          break;
       }
    }
-   for (unsigned i = 0; i < TENSOR_MAX_BUFFERS; i++) {
+   for (unsigned i = TENSOR_MAX_DECODE_BUFFERS; i < TENSOR_MAX_BUFFERS; i++) {
       if (!driver->buffers[i].used) {
          buffer_index = i;
          break;
@@ -1332,7 +1512,7 @@ tensor_derive_image(VADriverContextP ctx, VASurfaceID surface_id,
          break;
       }
    }
-   for (unsigned i = 0; i < TENSOR_MAX_BUFFERS; i++) {
+   for (unsigned i = TENSOR_MAX_DECODE_BUFFERS; i < TENSOR_MAX_BUFFERS; i++) {
       if (!driver->buffers[i].used) {
          buffer_index = i;
          break;
@@ -1486,15 +1666,28 @@ tensor_export_surface_handle(VADriverContextP ctx, VASurfaceID surface_id,
                              uint32_t mem_type, uint32_t flags,
                              void *descriptor)
 {
+   uint64_t started_us = tensor_debug_enabled() ? tensor_monotonic_us() : 0;
+   uint64_t synced_us = started_us;
    struct tensor_va_driver *driver = ctx->pDriverData;
    struct tensor_va_surface *surface = tensor_surface(driver, surface_id);
    if (!surface || !descriptor)
       return VA_STATUS_ERROR_INVALID_SURFACE;
    if (mem_type != VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2)
       return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
-   VAStatus sync_status = tensor_sync_surface(ctx, surface_id);
-   if (sync_status != VA_STATUS_SUCCESS)
-      return sync_status;
+   if (surface->status != VASurfaceReady &&
+       tensor_deferred_export_enabled()) {
+      surface->exported_before_ready = true;
+      if (tensor_debug_enabled())
+         fprintf(stderr,
+                 "tensor-va: deferred export surface=%u pts=%lld\n",
+                 surface_id, (long long)surface->pts_us);
+   } else {
+      VAStatus sync_status = tensor_sync_surface(ctx, surface_id);
+      if (sync_status != VA_STATUS_SUCCESS)
+         return sync_status;
+   }
+   if (tensor_debug_enabled())
+      synced_us = tensor_monotonic_us();
    if (tensor_debug_enabled())
       fprintf(stderr,
               "tensor-va: export surface=%u mem=0x%x flags=0x%x fd=%d\n",
@@ -1537,6 +1730,12 @@ tensor_export_surface_handle(VADriverContextP ctx, VASurfaceID surface_id,
       prime->layers[0].pitch[0] = surface->stride;
       prime->layers[0].pitch[1] = surface->stride;
    }
+   if (tensor_debug_enabled())
+      fprintf(stderr,
+              "tensor-va: export-timing surface=%u wait-us=%llu "
+              "elapsed-us=%llu\n",
+              surface_id, (unsigned long long)(synced_us - started_us),
+              (unsigned long long)(tensor_monotonic_us() - started_us));
    return VA_STATUS_SUCCESS;
 }
 

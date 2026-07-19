@@ -6,6 +6,8 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/dma-buf.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
 #include <signal.h>
@@ -13,6 +15,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -20,6 +24,18 @@
 
 typedef bool (*binder_set_max_threads_fn)(uint32_t);
 typedef void (*binder_start_thread_pool_fn)(void);
+
+#define TMC_MAX_SHARED_SURFACES 64
+
+struct tmc_shared_surface {
+   bool used;
+   int64_t pts_us;
+   int fd;
+   uint8_t *data;
+   size_t data_size;
+   uint32_t stride;
+   uint32_t slice_height;
+};
 
 static int
 read_all(int fd, void *data, size_t size)
@@ -38,6 +54,170 @@ read_all(int fd, void *data, size_t size)
       size -= (size_t)got;
    }
    return 1;
+}
+
+static int
+receive_header(int fd, struct tmc_message *message, int *received_fd)
+{
+   struct iovec iov = {
+      .iov_base = message,
+      .iov_len = sizeof(*message),
+   };
+   char control[CMSG_SPACE(sizeof(int))] = {0};
+   struct msghdr msg = {
+      .msg_iov = &iov,
+      .msg_iovlen = 1,
+      .msg_control = control,
+      .msg_controllen = sizeof(control),
+   };
+
+   *received_fd = -1;
+   ssize_t got;
+   do {
+      got = recvmsg(fd, &msg, MSG_WAITALL);
+   } while (got < 0 && errno == EINTR);
+   if (got == 0)
+      return 0;
+   if (got != (ssize_t)sizeof(*message))
+      return -1;
+
+   for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg;
+        cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+      if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS &&
+          cmsg->cmsg_len >= CMSG_LEN(sizeof(int))) {
+         memcpy(received_fd, CMSG_DATA(cmsg), sizeof(*received_fd));
+         break;
+      }
+   }
+   return 1;
+}
+
+static int
+dma_buf_sync(int fd, uint64_t flags)
+{
+   struct dma_buf_sync sync = {.flags = flags};
+   int result;
+   do {
+      result = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+   } while (result < 0 && errno == EINTR);
+   return result == 0;
+}
+
+static void
+release_shared_surface(struct tmc_shared_surface *surface)
+{
+   if (surface->data && surface->data_size)
+      munmap(surface->data, surface->data_size);
+   if (surface->fd >= 0)
+      close(surface->fd);
+   memset(surface, 0, sizeof(*surface));
+   surface->fd = -1;
+}
+
+static void
+release_shared_surfaces(struct tmc_shared_surface *surfaces)
+{
+   for (unsigned i = 0; i < TMC_MAX_SHARED_SURFACES; i++)
+      if (surfaces[i].used)
+         release_shared_surface(&surfaces[i]);
+}
+
+static struct tmc_shared_surface *
+find_shared_surface(struct tmc_shared_surface *surfaces, int64_t pts_us)
+{
+   for (unsigned i = 0; i < TMC_MAX_SHARED_SURFACES; i++)
+      if (surfaces[i].used && surfaces[i].pts_us == pts_us)
+         return &surfaces[i];
+   return NULL;
+}
+
+static int
+register_shared_surface(struct tmc_shared_surface *surfaces,
+                        const struct tmc_message *message, int received_fd)
+{
+   if (received_fd < 0 || !message->arg0 || !message->arg1 || !message->arg2)
+      return 0;
+
+   struct tmc_shared_surface *surface =
+      find_shared_surface(surfaces, message->pts_us);
+   if (surface)
+      release_shared_surface(surface);
+   else {
+      for (unsigned i = 0; i < TMC_MAX_SHARED_SURFACES; i++) {
+         if (!surfaces[i].used) {
+            surface = &surfaces[i];
+            break;
+         }
+      }
+   }
+   if (!surface)
+      return 0;
+
+   void *mapping = mmap(NULL, message->arg2, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, received_fd, 0);
+   if (mapping == MAP_FAILED)
+      return 0;
+
+   memset(surface, 0, sizeof(*surface));
+   surface->used = true;
+   surface->pts_us = message->pts_us;
+   surface->fd = received_fd;
+   surface->data = mapping;
+   surface->data_size = message->arg2;
+   surface->stride = message->arg0;
+   surface->slice_height = message->arg1;
+   return 1;
+}
+
+static int
+copy_to_shared_surface(struct tmc_shared_surface *surface,
+                       const uint8_t *source, size_t source_size,
+                       uint32_t source_stride, uint32_t source_slice_height)
+{
+   if (!source || !source_stride || !source_slice_height ||
+       (size_t)source_stride > SIZE_MAX / source_slice_height ||
+       (size_t)surface->stride > SIZE_MAX / surface->slice_height)
+      return 0;
+
+   size_t source_y_size = (size_t)source_stride * source_slice_height;
+   size_t destination_y_size =
+      (size_t)surface->stride * surface->slice_height;
+   if (source_y_size > source_size ||
+       destination_y_size > surface->data_size ||
+       destination_y_size > SIZE_MAX - destination_y_size / 2 ||
+       destination_y_size + destination_y_size / 2 > surface->data_size)
+      return 0;
+
+   if (!dma_buf_sync(surface->fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE))
+      return 0;
+   memset(surface->data, 16, destination_y_size);
+   memset(surface->data + destination_y_size, 128, destination_y_size / 2);
+
+   unsigned luma_rows = source_slice_height < surface->slice_height
+                           ? source_slice_height
+                           : surface->slice_height;
+   size_t row_bytes = source_stride < surface->stride
+                         ? source_stride
+                         : surface->stride;
+   for (unsigned row = 0; row < luma_rows; row++)
+      memcpy(surface->data + (size_t)row * surface->stride,
+             source + (size_t)row * source_stride, row_bytes);
+
+   size_t source_uv_size = source_size - source_y_size;
+   unsigned chroma_rows = source_slice_height / 2;
+   if (chroma_rows > surface->slice_height / 2)
+      chroma_rows = surface->slice_height / 2;
+   for (unsigned row = 0; row < chroma_rows; row++) {
+      size_t source_offset = (size_t)row * source_stride;
+      if (source_offset >= source_uv_size)
+         break;
+      size_t available = source_uv_size - source_offset;
+      size_t copy_bytes = row_bytes < available ? row_bytes : available;
+      memcpy(surface->data + destination_y_size +
+                (size_t)row * surface->stride,
+             source + source_y_size + source_offset, copy_bytes);
+   }
+   return dma_buf_sync(surface->fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE);
 }
 
 static int
@@ -108,7 +288,8 @@ start_binder_thread_pool(void)
 }
 
 static int
-send_output_format(int fd, AMediaCodec *codec)
+send_output_format(int fd, AMediaCodec *codec, uint32_t *output_stride,
+                   uint32_t *output_slice_height)
 {
    AMediaFormat *format = AMediaCodec_getOutputFormat(codec);
    int32_t width = 0, height = 0, stride = 0, slice_height = 0;
@@ -116,6 +297,9 @@ send_output_format(int fd, AMediaCodec *codec)
    AMediaFormat_getInt32(format, "height", &height);
    AMediaFormat_getInt32(format, "stride", &stride);
    AMediaFormat_getInt32(format, "slice-height", &slice_height);
+   *output_stride = stride > 0 ? (uint32_t)stride : (uint32_t)width;
+   *output_slice_height =
+      slice_height > 0 ? (uint32_t)slice_height : (uint32_t)height;
    printf("output-format: %s\n", AMediaFormat_toString(format));
    int ok = send_message(fd, TMC_FORMAT, 0, 0, (uint32_t)width,
                          (uint32_t)height, (uint32_t)stride,
@@ -126,7 +310,8 @@ send_output_format(int fd, AMediaCodec *codec)
 
 static int
 drain_output(int fd, AMediaCodec *codec, int64_t first_timeout_us,
-             int wait_for_eos)
+             int wait_for_eos, struct tmc_shared_surface *surfaces,
+             uint32_t *output_stride, uint32_t *output_slice_height)
 {
    unsigned empty_polls = 0;
    for (;;) {
@@ -134,7 +319,8 @@ drain_output(int fd, AMediaCodec *codec, int64_t first_timeout_us,
       ssize_t index = AMediaCodec_dequeueOutputBuffer(
          codec, &info, empty_polls ? 100000 : first_timeout_us);
       if (index == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
-         if (!send_output_format(fd, codec))
+         if (!send_output_format(fd, codec, output_stride,
+                                 output_slice_height))
             return 0;
          continue;
       }
@@ -154,11 +340,27 @@ drain_output(int fd, AMediaCodec *codec, int64_t first_timeout_us,
          return send_error(fd, "invalid MediaCodec output buffer");
       }
 
-      if (size && !send_message(fd, TMC_FRAME, info.presentationTimeUs,
-                                info.flags, 0, 0, 0, 0,
-                                buffer + info.offset, size)) {
-         AMediaCodec_releaseOutputBuffer(codec, (size_t)index, false);
-         return 0;
+      if (size) {
+         struct tmc_shared_surface *surface =
+            find_shared_surface(surfaces, info.presentationTimeUs);
+         if (surface) {
+            int copied = copy_to_shared_surface(
+               surface, buffer + info.offset, size, *output_stride,
+               *output_slice_height);
+            release_shared_surface(surface);
+            if (!copied ||
+                !send_message(fd, TMC_FRAME, info.presentationTimeUs,
+                              info.flags | TMC_FRAME_FLAG_SHARED_SURFACE,
+                              0, 0, 0, 0, NULL, 0)) {
+               AMediaCodec_releaseOutputBuffer(codec, (size_t)index, false);
+               return 0;
+            }
+         } else if (!send_message(fd, TMC_FRAME, info.presentationTimeUs,
+                                  info.flags, 0, 0, 0, 0,
+                                  buffer + info.offset, size)) {
+            AMediaCodec_releaseOutputBuffer(codec, (size_t)index, false);
+            return 0;
+         }
       }
       bool eos = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
       AMediaCodec_releaseOutputBuffer(codec, (size_t)index, false);
@@ -197,14 +399,22 @@ serve_client(int fd)
    AMediaFormat *format = NULL;
    int started = 0;
    int result = 0;
+   uint32_t output_stride = 0;
+   uint32_t output_slice_height = 0;
+   struct tmc_shared_surface surfaces[TMC_MAX_SHARED_SURFACES] = {0};
+   for (unsigned i = 0; i < TMC_MAX_SHARED_SURFACES; i++)
+      surfaces[i].fd = -1;
 
    for (;;) {
       struct tmc_message message;
-      int read_status = read_all(fd, &message, sizeof(message));
+      int received_fd = -1;
+      int read_status = receive_header(fd, &message, &received_fd);
       if (read_status <= 0)
          break;
       if (message.magic != TMC_MAGIC || message.version != TMC_VERSION ||
           message.payload_size > TMC_MAX_PAYLOAD) {
+         if (received_fd >= 0)
+            close(received_fd);
          send_error(fd, "invalid bridge message header");
          break;
       }
@@ -213,6 +423,8 @@ serve_client(int fd)
       if (message.payload_size) {
          payload = malloc(message.payload_size + 1u);
          if (!payload || read_all(fd, payload, message.payload_size) <= 0) {
+            if (received_fd >= 0)
+               close(received_fd);
             free(payload);
             break;
          }
@@ -221,6 +433,8 @@ serve_client(int fd)
 
       if (message.type == TMC_CONFIG) {
          if (codec || !payload || !message.arg0 || !message.arg1) {
+            if (received_fd >= 0)
+               close(received_fd);
             free(payload);
             send_error(fd, "invalid or duplicate codec configuration");
             break;
@@ -238,34 +452,60 @@ serve_client(int fd)
          AMediaFormat_setInt32(format, "frame-rate", (int32_t)message.arg2);
          AMediaFormat_setInt32(format, "color-format", 21);
          AMediaFormat_setInt32(format, "low-latency", 1);
+         /* Exynos Codec2 does not advertise Android's generic low-latency
+          * feature, but its H.264 decoder exposes the RTC vendor control used
+          * by low-latency Android streaming clients. */
+         AMediaFormat_setInt32(
+            format, "vendor.rtc-ext-dec-low-latency.enable", 1);
          AMediaFormat_setInt32(format, "max-input-size", 4 * 1024 * 1024);
+         output_stride = message.arg0;
+         output_slice_height = message.arg1;
          media_status_t status =
             AMediaCodec_configure(codec, format, NULL, NULL, 0);
          if (status == AMEDIA_OK)
             status = AMediaCodec_start(codec);
          free(payload);
+         if (received_fd >= 0)
+            close(received_fd);
          if (status != AMEDIA_OK) {
             send_error(fd, "MediaCodec configure/start failed");
             break;
          }
          started = 1;
          if (!send_message(fd, TMC_READY, 0, 0, message.arg0, message.arg1,
-                           message.arg2, 0, NULL, 0))
+                           message.arg2, TMC_CAP_SHARED_SURFACE, NULL, 0))
             break;
          continue;
       }
 
       if (!started) {
+         if (received_fd >= 0)
+            close(received_fd);
          free(payload);
          send_error(fd, "codec is not configured");
          break;
       }
 
+      if (message.type == TMC_SURFACE) {
+         free(payload);
+         if (!register_shared_surface(surfaces, &message, received_fd)) {
+            if (received_fd >= 0)
+               close(received_fd);
+            send_error(fd, "failed to register shared decode surface");
+            break;
+         }
+         continue;
+      }
+
+      if (received_fd >= 0)
+         close(received_fd);
+
       if (message.type == TMC_PACKET) {
          int ok = queue_input(codec, payload, message.payload_size,
                               message.pts_us, 0);
          free(payload);
-         if (!ok || !drain_output(fd, codec, 0, 0) ||
+         if (!ok || !drain_output(fd, codec, 0, 0, surfaces,
+                                  &output_stride, &output_slice_height) ||
              !send_message(fd, TMC_ACK, message.pts_us, 0, 0, 0, 0, 0,
                            NULL, 0))
             break;
@@ -274,7 +514,8 @@ serve_client(int fd)
 
       if (message.type == TMC_DRAIN) {
          free(payload);
-         if (!drain_output(fd, codec, 100000, 0) ||
+         if (!drain_output(fd, codec, 100000, 0, surfaces,
+                           &output_stride, &output_slice_height) ||
              !send_message(fd, TMC_ACK, message.pts_us, 0, 0, 0, 0, 0,
                            NULL, 0))
             break;
@@ -285,7 +526,8 @@ serve_client(int fd)
       if (message.type == TMC_INPUT_EOS) {
          if (!queue_input(codec, NULL, 0, message.pts_us,
                           AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) ||
-             !drain_output(fd, codec, 100000, 1))
+             !drain_output(fd, codec, 100000, 1, surfaces,
+                           &output_stride, &output_slice_height))
             break;
          result = 1;
          break;
@@ -304,6 +546,7 @@ serve_client(int fd)
       AMediaCodec_delete(codec);
    if (format)
       AMediaFormat_delete(format);
+   release_shared_surfaces(surfaces);
    return result;
 }
 

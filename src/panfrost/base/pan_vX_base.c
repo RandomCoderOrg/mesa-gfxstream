@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <poll.h>
 #include <pthread.h>
@@ -718,7 +719,21 @@ kbase_import_dmabuf(kbase k, int fd)
                         pthread_mutex_unlock(&k->handle_lock);
                         return i;
                 } else if (ret < 0) {
-                        printf("error in os_same_file_description(%i, %i)\n", h.fd, fd);
+                        /*
+                         * Android's seccomp policy denies kcmp(KCMP_FILE) to
+                         * unprivileged Termux processes.  DMA-BUF duplicates
+                         * still expose the same device/inode through fstat,
+                         * so use that stable identity rather than importing
+                         * the same video surface into Kbase every frame.
+                         */
+                        struct stat old_stat, new_stat;
+                        if (fstat(h.fd, &old_stat) == 0 &&
+                            fstat(fd, &new_stat) == 0 &&
+                            old_stat.st_dev == new_stat.st_dev &&
+                            old_stat.st_ino == new_stat.st_ino) {
+                                pthread_mutex_unlock(&k->handle_lock);
+                                return i;
+                        }
                 }
         }
 

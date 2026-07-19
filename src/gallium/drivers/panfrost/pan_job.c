@@ -25,6 +25,7 @@
  */
 
 #include <assert.h>
+#include <errno.h>
 #include <unistd.h>
 
 #include "drm-uapi/panfrost_drm.h"
@@ -869,6 +870,21 @@ panfrost_batch_submit_jobs(struct panfrost_batch *batch,
                                                   out_sync);
                 if (ret)
                         goto done;
+        }
+
+        /* Android Kbase can execute the vertex/tiler and fragment atoms with
+         * their implicit BO dependencies without a userspace round trip in
+         * between.  Keep the batch pools alive until both atoms finish, but
+         * pay for only one wait per batch instead of PAN_DBG_SYNC's wait after
+         * every individual atom.  This is deliberately opt-in while the
+         * rootless Kbase path is being validated on Tensor G1.
+         */
+        if (dev->kbase && (dev->debug & PAN_DBG_BATCH_SYNC) &&
+            !batch->ctx->is_noop &&
+            !dev->mali.syncobj_wait(&dev->mali,
+                                    batch->ctx->syncobj_kbase)) {
+                ret = ETIMEDOUT;
+                goto done;
         }
 
 done:

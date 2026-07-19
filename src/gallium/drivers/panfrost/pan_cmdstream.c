@@ -3940,11 +3940,15 @@ panfrost_emit_malloc_vertex(struct panfrost_batch *batch,
 #if PAN_ARCH < 10
                         unsigned fixed_slots =
                                 util_bitcount(fs->key.fs.fixed_varying_mask);
+                        unsigned varying_size =
+                                (fixed_slots * 16) + generic_size;
 
                         cfg.vertex_packet_stride =
-                                16 + (fixed_slots * 16) + generic_size;
-#endif
+                                16 + varying_size;
+                        cfg.vertex_attribute_stride = varying_size;
+#else
                         cfg.vertex_attribute_stride = generic_size;
+#endif
                 } else {
                         /* Hardware requirement for "no varyings" */
 #if PAN_ARCH < 10

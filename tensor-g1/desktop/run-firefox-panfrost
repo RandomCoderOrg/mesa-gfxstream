@@ -50,6 +50,10 @@ export MESA_GLSL_VERSION_OVERRIDE="${MESA_GLSL_VERSION_OVERRIDE:-150}"
 # Present queue as GLX, avoiding its broken CPU-upload presentation path.
 export PAN_MALI_X11_DRI3="${PAN_MALI_X11_DRI3:-1}"
 export PAN_MESA_DEBUG="${PAN_MESA_DEBUG:-sync}"
+# AHardwareBuffer-backed display targets substantially improve Present
+# throughput, but Mutter cannot yet use the same path for its own swapchain.
+# Keep Firefox's experiment opt-in instead of changing the stable default.
+export PAN_MALI_X11_AHB="${PAN_MALI_X11_AHB:-0}"
 
 # Opt in to the rootless H.264 VA-API -> Android MediaCodec bridge. Firefox's
 # RDD sandbox cannot open the shared Unix socket or Android DMA heap from a
@@ -68,6 +72,10 @@ if [ "${TENSOR_VAAPI:-0}" = 1 ]; then
    # DRM device and cannot advertise PRIME capabilities through drmGetCap().
    export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-1}"
    export MOZ_DISABLE_RDD_SANDBOX="${MOZ_DISABLE_RDD_SANDBOX:-1}"
+   # Exynos holds the first H.264 output until later access units arrive, while
+   # Firefox exports that VA surface immediately.  Let Firefox import the
+   # preallocated DMA-BUF and fill it later when the matching PTS is returned.
+   export TENSOR_VA_DEFERRED_EXPORT="${TENSOR_VA_DEFERRED_EXPORT:-1}"
 else
    export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-0}"
 fi

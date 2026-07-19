@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tensor video benchmark</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: contain; }
+  pre {
+    position: fixed; left: 8px; top: 8px; z-index: 1; margin: 0;
+    padding: 8px 10px; color: #fff; background: rgba(0, 0, 0, .78);
+    font: 14px/1.35 monospace;
+  }
+</style>
+<video id="video" muted playsinline></video>
+<pre id="stats">loading</pre>
+<script>
+  const video = document.querySelector("#video");
+  const stats = document.querySelector("#stats");
+  const parameters = new URLSearchParams(location.search);
+  const source = parameters.get("src") || "tensor-1080p60.mp4";
+  video.loop = parameters.get("loop") !== "0";
+  video.src = source;
+  if (parameters.get("autoplay") !== "0")
+    video.play();
+
+  addEventListener("keydown", event => {
+    if (event.code !== "Space")
+      return;
+    event.preventDefault();
+    if (video.paused)
+      video.play();
+    else
+      video.pause();
+  });
+
+  let previousTotal = 0;
+  let previousDropped = 0;
+  let previousTime = performance.now();
+
+  setInterval(() => {
+    const quality = video.getVideoPlaybackQuality();
+    const now = performance.now();
+    const elapsed = (now - previousTime) / 1000;
+    const intervalTotal = quality.totalVideoFrames - previousTotal;
+    const intervalDropped = quality.droppedVideoFrames - previousDropped;
+    const intervalRate = intervalTotal
+      ? 100 * intervalDropped / intervalTotal : 0;
+    const totalRate = quality.totalVideoFrames
+      ? 100 * quality.droppedVideoFrames / quality.totalVideoFrames : 0;
+
+    stats.textContent = [
+      `${video.videoWidth}x${video.videoHeight}`,
+      `time ${video.currentTime.toFixed(2)}s  readyState ${video.readyState}`,
+      `total ${quality.totalVideoFrames}  dropped ${quality.droppedVideoFrames} (${totalRate.toFixed(2)}%)`,
+      `interval ${(intervalTotal / elapsed).toFixed(1)} fps  dropped ${intervalDropped}/${intervalTotal} (${intervalRate.toFixed(2)}%)`,
+    ].join("\n");
+
+    previousTotal = quality.totalVideoFrames;
+    previousDropped = quality.droppedVideoFrames;
+    previousTime = now;
+  }, 1000);
+</script>
