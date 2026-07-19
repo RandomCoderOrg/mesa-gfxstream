@@ -1,0 +1,67 @@
+Tensor G1 Firefox YouTube debug capture
+=======================================
+
+Date: 2026-07-19
+Device: Pixel 6a / Tensor G1
+Container: uDroid Ubuntu 22.04 Jammy PRoot
+URL: https://www.youtube.com/watch?v=OHAjc-ayhus&list=RDOHAjc-ayhus&start_radio=1
+Title: ヨルシカ - あぶく（OFFICIAL VIDEO）
+
+Launch instrumentation:
+
+  TENSOR_VAAPI=1
+  TENSOR_VA_DEBUG=1
+  MOZ_LOG=FFmpegVideo:4,Dmabuf:4
+
+YouTube Stats for nerds at the screenshot checkpoint:
+
+  Viewport / Frames: 972x547 / 909 dropped of 4078
+  Current / Optimal Res: 640x360@24 / 640x360@24
+  Codecs: avc1.4d401e (134) / opus (251)
+  Connection Speed: 2408 Kbps
+  Network Activity: 0 KB
+  Buffer Health: 44.11 s
+
+Firefox trace counts during the captured run:
+
+  IsHardwareAccelerated=1: 9
+  IsHardwareAccelerated=0: 7
+  vaExportSurfaceHandle failed: 3
+  tensor-va decoded/export completions: 0
+  zero-copy parent imports: 0
+
+Representative first decode attempt:
+
+  FFmpegVideoDecoder::FFmpegVideoDecoder MIME video/avc Codec ID 27
+  VA-API FFmpeg init successful
+  FFmpegVideoDecoder, init, IsHardwareAccelerated=1
+  Requesting pixel format VAAPI_VLD
+  tensor-va: create-surfaces 640x368 format=0x1 count=1
+  Frame decode takes 3.15 ms average decode time 3.15 ms decoded 1 frames
+  GetVAAPISurfaceDescriptor(): vaExportSurfaceHandle failed
+  ProcessFlush()
+  FFmpegVideoDecoder, init, IsHardwareAccelerated=0
+  Requesting pixel format YUV420P
+
+Interpretation:
+
+  YouTube selected AVC as intended, and Firefox repeatedly entered the Tensor
+  VA-API path. The first surface could not be synchronized/exported because
+  the Exynos MediaCodec decoder retained queued display-order output, so
+  Firefox flushed that decoder and continued with software H.264. The visible
+  playback in the accompanying screenshot is therefore not evidence of
+  sustained hardware video decoding.
+
+  Opening and toggling YouTube's Stats for nerds context action caused a
+  significant transient stutter, hang, and visual glitch. Playback recovered
+  after approximately three seconds. The 909/4078 dropped-frame counter
+  includes the observed run up to the stable screenshot checkpoint; it should
+  not be treated as a steady-state benchmark.
+
+Font verification:
+
+  fc-match :lang=ja
+  NotoSansCJK-Regular.ttc: "Noto Sans CJK JP" "Regular"
+
+The full MOZ_LOG/TENSOR_VA_DEBUG stream was 2.7 MiB and highly repetitive, so
+this file preserves the decisive markers and counts rather than the raw log.

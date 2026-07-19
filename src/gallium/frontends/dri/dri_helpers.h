@@ -59,6 +59,11 @@ boolean
 dri2_yuv_dma_buf_supported(struct dri_screen *screen,
                            const struct dri2_format_mapping *map);
 
+void
+dri2_init_image_extension(struct dri_screen *screen,
+                          struct pipe_screen *pscreen,
+                          bool is_kms_screen);
+
 __DRIimage *
 dri2_lookup_egl_image(struct dri_screen *screen, void *handle);
 

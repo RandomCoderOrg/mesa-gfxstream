@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/dma-buf.h>
 #include <linux/dma-heap.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -150,6 +151,23 @@ tensor_debug_enabled(void)
 {
    const char *value = getenv("TENSOR_VA_DEBUG");
    return value && *value && strcmp(value, "0") != 0;
+}
+
+static bool
+tensor_dma_buf_sync(int fd, uint64_t flags)
+{
+   struct dma_buf_sync sync = {.flags = flags};
+   int result;
+
+   do {
+      result = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+   } while (result < 0 && errno == EINTR);
+
+   if (result < 0 && tensor_debug_enabled()) {
+      fprintf(stderr, "tensor-va: DMA_BUF_IOCTL_SYNC flags=0x%llx failed: %s\n",
+              (unsigned long long)flags, strerror(errno));
+   }
+   return result == 0;
 }
 
 static bool
@@ -578,8 +596,15 @@ tensor_store_frame(struct tensor_va_driver *driver,
          continue;
       if (message->payload_size > surface->data_size)
          return false;
-      if (message->payload_size)
+      if (message->payload_size) {
+         if (!tensor_dma_buf_sync(surface->dma_fd,
+                                  DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE))
+            return false;
          memcpy(surface->data, payload, message->payload_size);
+         if (!tensor_dma_buf_sync(surface->dma_fd,
+                                  DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE))
+            return false;
+      }
       surface->frame_size = message->payload_size;
       surface->stride = context->output_stride;
       surface->slice_height = context->output_slice_height;
@@ -1316,11 +1341,15 @@ tensor_derive_image(VADriverContextP ctx, VASurfaceID surface_id,
    if (image_index == TENSOR_MAX_IMAGES || buffer_index == TENSOR_MAX_BUFFERS)
       return VA_STATUS_ERROR_MAX_NUM_EXCEEDED;
 
+   size_t image_size =
+      (size_t)surface->stride * surface->slice_height * 3u / 2u;
+   if (image_size > surface->data_size || image_size > UINT_MAX)
+      return VA_STATUS_ERROR_ALLOCATION_FAILED;
+
    struct tensor_va_buffer *buffer = &driver->buffers[buffer_index];
    buffer->used = true;
    buffer->type = VAImageBufferType;
-   buffer->size = surface->data_size > UINT_MAX ? UINT_MAX
-                                                 : (unsigned)surface->data_size;
+   buffer->size = (unsigned)image_size;
    buffer->num_elements = 1;
    buffer->data = surface->data;
    buffer->owns_data = false;

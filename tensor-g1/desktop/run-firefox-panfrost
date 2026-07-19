@@ -45,10 +45,10 @@ export MOZ_WEBRENDER=1
 export MESA_GL_VERSION_OVERRIDE="${MESA_GL_VERSION_OVERRIDE:-3.2}"
 export MESA_GLSL_VERSION_OVERRIDE="${MESA_GLSL_VERSION_OVERRIDE:-150}"
 
-# Keep the conservative presentation mode even though rendering itself stays
-# on Mali-G78. about:support must report mesa/panfrost, not llvmpipe.
-export PAN_MALI_X11_DRI3="${PAN_MALI_X11_DRI3:-0}"
-export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-0}"
+# Firefox uses X11 EGL because stock Firefox requires EGL for DMA-BUF and
+# VA-API. This fork gives that swrast loader the same reusable DMA-BUF/DRI3
+# Present queue as GLX, avoiding its broken CPU-upload presentation path.
+export PAN_MALI_X11_DRI3="${PAN_MALI_X11_DRI3:-1}"
 export PAN_MESA_DEBUG="${PAN_MESA_DEBUG:-sync}"
 
 # Opt in to the rootless H.264 VA-API -> Android MediaCodec bridge. Firefox's
@@ -63,7 +63,13 @@ if [ "${TENSOR_VAAPI:-0}" = 1 ]; then
    fi
    export LIBVA_DRIVER_NAME=tensor
    export LIBVA_DRIVERS_PATH="$va_drivers_path"
+   # Firefox imports VA-API's R8 and GR88 planes as EGLImages. Kbase can
+   # import their DMA-heap file descriptors even though /dev/mali0 is not a
+   # DRM device and cannot advertise PRIME capabilities through drmGetCap().
+   export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-1}"
    export MOZ_DISABLE_RDD_SANDBOX="${MOZ_DISABLE_RDD_SANDBOX:-1}"
+else
+   export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-0}"
 fi
 
 exec "$panfork_x11" "$firefox" --no-remote --profile "$profile" "$@"

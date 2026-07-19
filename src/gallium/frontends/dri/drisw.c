@@ -586,6 +586,28 @@ static const __DRIextension *drisw_robust_screen_extensions[] = {
    NULL
 };
 
+#ifdef HAVE_PANFROST
+static void
+panfrost_drisw_init_screen_extensions(struct dri_screen *screen,
+                                      struct pipe_screen *pscreen,
+                                      bool robust)
+{
+   const __DRIextension *const *source = robust ?
+      drisw_robust_screen_extensions : drisw_screen_extensions;
+   unsigned i;
+
+   dri2_init_image_extension(screen, pscreen, false);
+
+   for (i = 0; source[i]; ++i) {
+      screen->screen_extensions[i] =
+         source[i] == &driSWImageExtension.base ?
+            &screen->image_extension.base : source[i];
+   }
+   screen->screen_extensions[i] = NULL;
+   screen->extensions = screen->screen_extensions;
+}
+#endif
+
 static const struct drisw_loader_funcs drisw_lf = {
    .get_image = drisw_get_image,
    .put_image = drisw_put_image,
@@ -707,6 +729,9 @@ drisw_init_screen(struct dri_screen *screen)
    const __DRIconfig **configs;
    struct pipe_screen *pscreen = NULL;
    const struct drisw_loader_funcs *lf = &drisw_lf;
+#ifdef HAVE_PANFROST
+   bool is_panfrost = false;
+#endif
 
    screen->swrast_no_present = debug_get_option_swrast_no_present();
 
@@ -718,8 +743,10 @@ drisw_init_screen(struct dri_screen *screen)
    bool success = false;
 #ifdef HAVE_PANFROST
    pscreen = panfrost_drisw_create_screen(screen);
-   if (pscreen)
+   if (pscreen) {
+      is_panfrost = true;
       dri_init_options(screen);
+   }
 #endif
 #ifdef HAVE_DRISW_KMS
    if (!pscreen && screen->fd != -1)
@@ -745,6 +772,12 @@ drisw_init_screen(struct dri_screen *screen)
    }
    else
       screen->extensions = drisw_screen_extensions;
+#ifdef HAVE_PANFROST
+   if (is_panfrost) {
+      panfrost_drisw_init_screen_extensions(screen, pscreen,
+                                            screen->has_reset_status_query);
+   }
+#endif
    screen->lookup_egl_image = dri2_lookup_egl_image;
 
    const __DRIimageLookupExtension *image = screen->dri2.image;

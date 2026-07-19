@@ -50,6 +50,8 @@
 #include "kopper_interface.h"
 
 #ifdef HAVE_DRI3
+#include <xcb/dri3.h>
+#include <xcb/present.h>
 #include "platform_x11_dri3.h"
 #endif
 
@@ -98,6 +100,20 @@ static void
 swrastDestroyDrawable(struct dri2_egl_display * dri2_dpy,
                       struct dri2_egl_surface * dri2_surf)
 {
+#ifdef HAVE_DRI3
+   if (dri2_surf->present_special_event) {
+      for (unsigned i = 0;
+           i < ARRAY_SIZE(dri2_surf->present_pixmaps); ++i) {
+         if (dri2_surf->present_pixmaps[i] != XCB_NONE)
+            xcb_free_pixmap(dri2_dpy->conn,
+                            dri2_surf->present_pixmaps[i]);
+      }
+      xcb_unregister_for_special_event(dri2_dpy->conn,
+                                       dri2_surf->present_special_event);
+      dri2_surf->present_special_event = NULL;
+   }
+#endif
+
    xcb_free_gc(dri2_dpy->conn, dri2_surf->gc);
    xcb_free_gc(dri2_dpy->conn, dri2_surf->swapgc);
 }
@@ -243,6 +259,164 @@ swrastPutImage2(__DRIdrawable *draw, int op,
       }
    }
 }
+
+#ifdef HAVE_DRI3
+static bool
+swrastReapPresentEvent(struct dri2_egl_surface *dri2_surf,
+                       struct dri2_egl_display *dri2_dpy,
+                       bool block, unsigned *released_mask)
+{
+   for (;;) {
+      xcb_generic_event_t *event = block ?
+         xcb_wait_for_special_event(dri2_dpy->conn,
+                                    dri2_surf->present_special_event) :
+         xcb_poll_for_special_event(dri2_dpy->conn,
+                                    dri2_surf->present_special_event);
+
+      if (!event)
+         return false;
+
+      xcb_present_generic_event_t *generic = (void *)event;
+      if (generic->evtype == XCB_PRESENT_EVENT_IDLE_NOTIFY) {
+         xcb_pixmap_t pixmap =
+            ((xcb_present_idle_notify_event_t *)event)->pixmap;
+
+         for (unsigned i = 0;
+              i < ARRAY_SIZE(dri2_surf->present_pixmaps); ++i) {
+            if (dri2_surf->present_pixmaps[i] == pixmap) {
+               xcb_free_pixmap(dri2_dpy->conn, pixmap);
+               dri2_surf->present_pixmaps[i] = XCB_NONE;
+               dri2_surf->present_in_flight--;
+               *released_mask |= BITFIELD_BIT(i);
+               free(event);
+               return true;
+            }
+         }
+      }
+
+      free(event);
+   }
+}
+
+static unsigned char
+swrastPutImageDmaBuf(__DRIdrawable *draw, int fd, int w, int h,
+                     int stride, uint64_t modifier, unsigned *out_slot,
+                     unsigned *released_mask, void *loaderPrivate)
+{
+   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   struct dri2_egl_display *dri2_dpy;
+   const char *enabled = getenv("PAN_MALI_X11_DRI3");
+   const char *zero_copy = getenv("PAN_MALI_X11_DRI3_ZERO_COPY");
+   xcb_void_cookie_t cookie;
+   xcb_generic_error_t *error;
+   xcb_pixmap_t pixmap;
+   uint32_t serial;
+   unsigned slot;
+   int x_fd;
+
+   if (!dri2_surf || !enabled || !strcmp(enabled, "0") || fd < 0 ||
+       dri2_surf->base.Type != EGL_WINDOW_BIT)
+      return GL_FALSE;
+
+   dri2_dpy = dri2_egl_display(dri2_surf->base.Resource.Display);
+   if (!dri2_dpy->conn || xcb_connection_has_error(dri2_dpy->conn))
+      return GL_FALSE;
+
+   *released_mask = 0;
+
+   if (!dri2_surf->present_special_event) {
+      dri2_surf->present_event_id = xcb_generate_id(dri2_dpy->conn);
+      cookie = xcb_present_select_input_checked(
+         dri2_dpy->conn, dri2_surf->present_event_id, dri2_surf->drawable,
+         XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY |
+         XCB_PRESENT_EVENT_MASK_IDLE_NOTIFY);
+      error = xcb_request_check(dri2_dpy->conn, cookie);
+      if (error) {
+         free(error);
+         return GL_FALSE;
+      }
+      dri2_surf->present_special_event = xcb_register_for_special_xge(
+         dri2_dpy->conn, &xcb_present_id, dri2_surf->present_event_id,
+         &dri2_surf->present_stamp);
+      if (!dri2_surf->present_special_event)
+         return GL_FALSE;
+   }
+
+   while (swrastReapPresentEvent(dri2_surf, dri2_dpy, false,
+                                 released_mask))
+      ;
+   while (dri2_surf->present_in_flight ==
+          ARRAY_SIZE(dri2_surf->present_pixmaps)) {
+      if (!swrastReapPresentEvent(dri2_surf, dri2_dpy, true,
+                                  released_mask))
+         return GL_FALSE;
+   }
+
+   for (slot = 0; slot < ARRAY_SIZE(dri2_surf->present_pixmaps); ++slot) {
+      if (dri2_surf->present_pixmaps[slot] == XCB_NONE)
+         break;
+   }
+   if (slot == ARRAY_SIZE(dri2_surf->present_pixmaps))
+      return GL_FALSE;
+
+   x_fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+   if (x_fd < 0)
+      return GL_FALSE;
+
+   pixmap = xcb_generate_id(dri2_dpy->conn);
+   if (!dri2_surf->present_validated) {
+      cookie = xcb_dri3_pixmap_from_buffers_checked(
+         dri2_dpy->conn, pixmap, dri2_surf->drawable, 1, w, h,
+         stride, 0, 0, 0, 0, 0, 0, 0,
+         dri2_surf->depth, 32, modifier, &x_fd);
+      error = xcb_request_check(dri2_dpy->conn, cookie);
+      if (error) {
+         free(error);
+         return GL_FALSE;
+      }
+   } else {
+      xcb_dri3_pixmap_from_buffers(
+         dri2_dpy->conn, pixmap, dri2_surf->drawable, 1, w, h,
+         stride, 0, 0, 0, 0, 0, 0, 0,
+         dri2_surf->depth, 32, modifier, &x_fd);
+   }
+
+   serial = ++dri2_surf->present_serial;
+   uint32_t options = XCB_PRESENT_OPTION_ASYNC |
+      ((zero_copy && strcmp(zero_copy, "0")) ?
+          XCB_PRESENT_OPTION_NONE : XCB_PRESENT_OPTION_COPY);
+
+   dri2_surf->present_pixmaps[slot] = pixmap;
+   dri2_surf->present_in_flight++;
+   if (!dri2_surf->present_validated) {
+      cookie = xcb_present_pixmap_checked(
+         dri2_dpy->conn, dri2_surf->drawable, pixmap, serial,
+         XCB_NONE, XCB_NONE, 0, 0,
+         XCB_NONE, XCB_NONE, XCB_NONE, options,
+         0, 0, 0, 0, NULL);
+      error = xcb_request_check(dri2_dpy->conn, cookie);
+      if (error) {
+         free(error);
+         dri2_surf->present_pixmaps[slot] = XCB_NONE;
+         dri2_surf->present_in_flight--;
+         xcb_free_pixmap(dri2_dpy->conn, pixmap);
+         xcb_flush(dri2_dpy->conn);
+         return GL_FALSE;
+      }
+      dri2_surf->present_validated = true;
+   } else {
+      xcb_present_pixmap(
+         dri2_dpy->conn, dri2_surf->drawable, pixmap, serial,
+         XCB_NONE, XCB_NONE, 0, 0,
+         XCB_NONE, XCB_NONE, XCB_NONE, options,
+         0, 0, 0, 0, NULL);
+   }
+
+   xcb_flush(dri2_dpy->conn);
+   *out_slot = slot;
+   return GL_TRUE;
+}
+#endif
 
 static void
 swrastGetImage(__DRIdrawable * read,
@@ -1371,12 +1545,19 @@ static const struct dri2_egl_display_vtbl dri2_x11_display_vtbl = {
 };
 
 static const __DRIswrastLoaderExtension swrast_loader_extension = {
+#ifdef HAVE_DRI3
+   .base = { __DRI_SWRAST_LOADER, 7 },
+#else
    .base = { __DRI_SWRAST_LOADER, 2 },
+#endif
 
    .getDrawableInfo = swrastGetDrawableInfo,
    .putImage        = swrastPutImage,
    .getImage        = swrastGetImage,
    .putImage2       = swrastPutImage2,
+#ifdef HAVE_DRI3
+   .putImageDmaBuf  = swrastPutImageDmaBuf,
+#endif
 };
 
 static_assert(sizeof(struct kopper_vk_surface_create_storage) >= sizeof(VkXcbSurfaceCreateInfoKHR), "");

@@ -2192,26 +2192,11 @@ static const __DRIextension *dri_screen_extensions_base[] = {
    &dri2FlushControlExtension.base,
 };
 
-/**
- * Set up the DRI extension list for this screen based on its underlying
- * gallium screen's capabilities.
- */
-static void
-dri2_init_screen_extensions(struct dri_screen *screen,
-                            struct pipe_screen *pscreen,
-                            bool is_kms_screen)
+void
+dri2_init_image_extension(struct dri_screen *screen,
+                          struct pipe_screen *pscreen,
+                          bool is_kms_screen)
 {
-   const __DRIextension **nExt;
-
-   STATIC_ASSERT(sizeof(screen->screen_extensions) >=
-                 sizeof(dri_screen_extensions_base));
-   memcpy(&screen->screen_extensions, dri_screen_extensions_base,
-          sizeof(dri_screen_extensions_base));
-   screen->extensions = screen->screen_extensions;
-
-   /* Point nExt at the end of the extension list */
-   nExt = &screen->screen_extensions[ARRAY_SIZE(dri_screen_extensions_base)];
-
    screen->image_extension = dri2ImageExtensionTempl;
    if (pscreen->resource_create_with_modifiers) {
       screen->image_extension.createImageWithModifiers =
@@ -2220,15 +2205,15 @@ dri2_init_screen_extensions(struct dri_screen *screen,
          dri2_create_image_with_modifiers2;
    }
 
-   if (pscreen->get_param(pscreen, PIPE_CAP_NATIVE_FENCE_FD)) {
+   if (pscreen->get_param(pscreen, PIPE_CAP_NATIVE_FENCE_FD))
       screen->image_extension.setInFenceFd = dri2_set_in_fence_fd;
-   }
 
    if (pscreen->get_param(pscreen, PIPE_CAP_DMABUF)) {
       uint64_t cap;
       bool can_import_dmabuf = false;
 
-      if (drmGetCap(screen->fd, DRM_CAP_PRIME, &cap) == 0 &&
+      if (screen->fd >= 0 &&
+          drmGetCap(screen->fd, DRM_CAP_PRIME, &cap) == 0 &&
           (cap & DRM_PRIME_CAP_IMPORT))
          can_import_dmabuf = true;
 
@@ -2255,6 +2240,29 @@ dri2_init_screen_extensions(struct dri_screen *screen,
          }
       }
    }
+}
+
+/**
+ * Set up the DRI extension list for this screen based on its underlying
+ * gallium screen's capabilities.
+ */
+static void
+dri2_init_screen_extensions(struct dri_screen *screen,
+                            struct pipe_screen *pscreen,
+                            bool is_kms_screen)
+{
+   const __DRIextension **nExt;
+
+   STATIC_ASSERT(sizeof(screen->screen_extensions) >=
+                 sizeof(dri_screen_extensions_base));
+   memcpy(&screen->screen_extensions, dri_screen_extensions_base,
+          sizeof(dri_screen_extensions_base));
+   screen->extensions = screen->screen_extensions;
+
+   /* Point nExt at the end of the extension list */
+   nExt = &screen->screen_extensions[ARRAY_SIZE(dri_screen_extensions_base)];
+
+   dri2_init_image_extension(screen, pscreen, is_kms_screen);
    *nExt++ = &screen->image_extension.base;
 
    if (!is_kms_screen) {

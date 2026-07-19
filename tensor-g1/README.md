@@ -8,7 +8,9 @@ This document covers the open-source OpenGL path. The rootless Android
 MediaCodec bridge is documented in
 [`media-codec/README.md`](media-codec/README.md), and the separate proprietary
 Vulkan integration is documented in
-[`vulkan-wrapper/README.md`](vulkan-wrapper/README.md).
+[`vulkan-wrapper/README.md`](vulkan-wrapper/README.md). The unfinished
+Box64/Steam compatibility experiments are recorded in
+[`box64/README.md`](box64/README.md).
 
 > [!WARNING]
 > This is a device bring-up branch made from deliberately dirty, invasive
@@ -18,11 +20,10 @@ Vulkan integration is documented in
 > bugs.
 
 Tested on a Pixel 6a from a uDroid Ubuntu 22.04 (Jammy) proot. Rendering is
-performed by Panfrost. The current GLX window path allocates linear display
-targets from Android's DMA heap, imports them into Kbase, and presents the same
+performed by Panfrost. The GLX and X11 EGL window paths allocate linear display
+targets from Android's DMA heap, import them into Kbase, and present the same
 DMA-BUF to Termux:X11 through a three-slot DRI3 Present queue. Released buffers
-are rotated back into Mesa instead of being allocated and imported again. EGL
-keeps the older CPU presenter until its loader gains the same private callback.
+are rotated back into Mesa instead of being allocated and imported again.
 VirGL and ANGLE are not used.
 
 ## Proof of hardware rendering
@@ -45,14 +46,14 @@ the captures because these are unedited `adb screencap` images from the Pixel
 
 ```mermaid
 flowchart LR
-    APP["Linux GLX application"] --> GLX["Mesa GLX and patched drisw"]
+    APP["Linux GLX or EGL application"] --> LOADER["Mesa X11 loader and patched drisw"]
     HEAP["Android system DMA heap"] -->|"allocate linear display target"| BUF["DMA-BUF"]
-    GLX --> PAN["Panfork / Panfrost"]
+    LOADER --> PAN["Panfork / Panfrost"]
     PAN -->|"Kbase UMM import and GPU render"| BUF
     BUF -->|"export fd at swap"| QUEUE["Three-slot DRI3 Present queue"]
     QUEUE -->|"PixmapFromBuffers + Present"| X11["Termux:X11 Present"]
     X11 -->|"IdleNotify releases slot"| QUEUE
-    QUEUE -->|"rotate released buffer"| GLX
+    QUEUE -->|"rotate released buffer"| LOADER
     X11 -->|"reliable server-side copy"| SURFACE["Android display surface"]
 ```
 
@@ -62,7 +63,7 @@ There are two separate paths:
    (`/dev/mali0`) and submits Mali Job Manager atoms directly. Panfrost compiles
    shaders and allocates all GPU buffers. This is hardware rendering, not
    llvmpipe.
-2. **GLX presentation:** Native Kbase allocations cannot be exported as DMA-BUFs,
+2. **X11 presentation:** Native Kbase allocations cannot be exported as DMA-BUFs,
    so display targets are instead allocated from `/dev/dma_heap/system` and
    imported into Kbase. At swap, the patched DRI software-presentation frontend
    exports that imported buffer and hands it to Termux:X11 with DRI3 1.2
@@ -102,8 +103,8 @@ Android/Kbase winsys:
   UMM path. The ordinary Kbase allocator remains the fallback for other
   resources.
 - DMA-heap allocation is activated only when the loader advertises the private
-  callback. The EGL X11 loader remains on the CPU presenter instead of creating
-  an imported buffer it cannot present.
+  callback. Both the GLX and X11 EGL swrast loaders now implement it; setting
+  `PAN_MALI_X11_DRI3=0` retains the CPU presenter as a diagnostic fallback.
 - The normal DRI image extension gate assumes a DRM fd and disables DMA-BUF
   import on `/dev/mali0`. `PAN_MALI_DMABUF_IMPORT=1` overrides that gate for
   the standalone EGL/DRI3 verification probe.
@@ -299,14 +300,30 @@ tensor-g1/desktop/run-epiphany-panfrost --private-instance \
   file:///tmp/video-loop.html
 ```
 
-They deliberately default `PAN_MALI_X11_DRI3=0` and
-`PAN_MALI_DMABUF_IMPORT=0`. GNOME Shell uses EGL, whose X11 loader does not yet
-implement the private reusable DMA-BUF presentation callback used by the GLX
-path. Final desktop windows are therefore CPU-presented while rendering stays
-on Mali-G78. The GNOME wrapper also removes an empty `/run/systemd/seats`
-marker when no systemd process exists. Without that PRoot guard, GNOME Shell 42
-mistakes the directory installed by the systemd package for a working logind
-service and aborts during background initialization.
+Japanese, Chinese, and Korean page text needs a CJK font inside the otherwise
+minimal Jammy container. Without one, Firefox tabs and GNOME window titles show
+square replacement glyphs. Install Noto CJK, refresh Fontconfig, and restart
+GNOME Shell and Firefox so both processes discard their old font caches:
+
+```sh
+apt-get update
+apt-get install -y --no-install-recommends fonts-noto-cjk
+fc-cache -f
+fc-match :lang=ja
+# NotoSansCJK-Regular.ttc: "Noto Sans CJK JP" "Regular"
+```
+
+GNOME Shell and Epiphany deliberately retain the conservative
+`PAN_MALI_X11_DRI3=0` and `PAN_MALI_DMABUF_IMPORT=0` defaults. Their final
+windows are CPU-presented while rendering stays on Mali-G78. Firefox enables
+`PAN_MALI_X11_DRI3=1` because its hardware-video path must use X11 EGL: stock
+Firefox disables DMA-BUF and VA-API when EGL is disabled. This fork's EGL
+swrast loader now supplies the same reusable DMA-BUF/DRI3 Present queue as the
+GLX loader, replacing the CPU-upload fallback that left Firefox windows
+unpainted under Mutter. The GNOME wrapper also removes an empty
+`/run/systemd/seats` marker when no systemd process exists. Without that PRoot
+guard, GNOME Shell 42 mistakes the directory installed by the systemd package
+for a working logind service and aborts during background initialization.
 
 Android exposes `/sys/bus/pci` but not `/proc/bus/pci/devices` inside PRoot.
 Firefox's short-lived graphics test consequently exits inside libpci before it
@@ -325,10 +342,16 @@ request a 3.2 core context. Do not export them globally.
 Firefox now reaches the experimental Tensor VA-API driver without a custom
 browser build. Mesa reports accessible Kbase `/dev/mali0` as the compatibility
 device carrier, Firefox's stock probe reports H.264 hardware support, and its
-RDD process decoded a local H.264 frame through Android MediaCodec. Presentation
-of that decoded DMA-heap NV12 surface was blank in the tested window and the
-RDD sandbox currently must be disabled per launch. The implementation and
-remaining browser-integration boundary are documented in
+RDD process decodes local H.264 through Android MediaCodec. The Panfrost-backed
+`drisw` frontend now publishes Mesa's full DRI image extension when
+`PAN_MALI_DMABUF_IMPORT=1`; this lets Firefox import the exported NV12 R8 and
+GR88 planes as EGLImages in both RDD and the parent renderer. VA-API mode turns
+that opt-in on automatically and ends the DMA-BUF CPU-write epoch before the
+GPU samples a decoded frame. Firefox remains on X11 EGL, as required by its
+stock VA-API feature gate, while the new EGL DRI3 presenter displays its final
+swaps. The tested 1920x1080 60 FPS H.264 pattern painted visibly while playing
+in stock Firefox. The RDD sandbox currently must be disabled per launch. The
+implementation and remaining copy boundary are documented in
 [`media-codec/README.md`](media-codec/README.md).
 
 GNOME Web can use that bridge. WebKitGTK's DMA-BUF renderer must be disabled
@@ -390,6 +413,13 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
   `Mali-G78 (Panfrost)` through the swrast-loader ABI.
 - Firefox's EGL probe completes and `about:support` reports WebRender and
   `mesa/panfrost` rather than a software device.
+- Firefox's RDD process imports the Tensor VA-API driver's R8 and GR88 NV12
+  planes into Panfrost EGLImages, sends the DMA-BUF surface through IPC, and
+  the parent renderer imports both planes again. The trace reports zero-copy
+  `EGLImageTargetTexture2D` success at both boundaries.
+- With X11 EGL and its DRI3 presenter enabled, stock Firefox visibly paints the
+  hardware-decoded 1920x1080 60 FPS test pattern together with its accelerated
+  browser chrome.
 - Android MediaCodec selected `c2.exynos.h264.decoder`; the native decoder,
   Unix-socket bridge, and Jammy GStreamer `tensorh264dec` element each decoded
   all 120 frames of the 1920x1080 60 FPS smoke stream. The GStreamer element
@@ -416,10 +446,10 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
 - The asynchronous Job Manager path can still report atom event `0x58` during
   longer GLX workloads. Use `PAN_MESA_DEBUG=sync` when correctness matters.
 - Reliable presentation still requests a full-frame copy inside Termux:X11.
-  The DRI3 path eliminates Panfork's client-side readback/upload, but the
-  tested X server did not GPU-offload its final copy. Strict no-copy Present
-  (`PAN_MALI_X11_DRI3_ZERO_COPY=1`) negotiates successfully but produces an
-  invisible window under the tested GNOME/Mutter session.
+  The GLX and EGL DRI3 paths eliminate Panfork's client-side readback/upload,
+  but the tested X server did not GPU-offload its final copy. Strict no-copy
+  Present (`PAN_MALI_X11_DRI3_ZERO_COPY=1`) negotiates successfully but
+  produces an invisible window under the tested GNOME/Mutter session.
 - G78 AFBC is disabled; swap control is deferred; resizing, suspend/resume,
   multisampling, audio integration, input devices, long stability runs, and a
   complete desktop session remain incomplete.
@@ -427,12 +457,28 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
   `/dev/mali0` is Kbase, not a DRM render node.
 - The MediaCodec bridge is H.264-only and CPU-copies decoded NV12 frames over a
   Unix socket into exportable DMA-heap VA surfaces. FFmpeg readback is verified
-  pixel-exact, but stock Firefox presentation remains blank; it is not yet a
-  working or zero-copy browser path.
+  pixel-exact, Firefox's two EGL imports are zero-copy, and X11 EGL DRI3
+  presentation is visibly working. Decode transport is still not end-to-end
+  zero-copy because MediaCodec output crosses the Unix socket as CPU data.
+- The dedicated Firefox profile disables VP9 and AV1 so YouTube requests H.264.
+  The tested local low-delay H.264 file is hardware-decoded and visible, but
+  the tested YouTube AVC stream currently falls back to software: Exynos
+  Codec2 holds several display-order outputs while Firefox synchronizes the
+  first VA surface before it can submit the required future pictures.
+- The Yorushika YouTube checkpoint visibly renders Japanese text after adding
+  Noto CJK. Stats for nerds reports AVC at 640x360@24 and 909 dropped frames out
+  of 4078 at capture time. Toggling the stats context action caused a roughly
+  three-second stutter/hang with visual glitches before recovery. See the
+  [screenshot](screenshots/firefox-youtube-stats-for-nerds.png) and
+  [filtered Firefox trace](logs/firefox-youtube-yorushika-debug.txt). This is a
+  diagnostic checkpoint, not a performance result.
+- The Box64/Steam work remains a compatibility experiment. Guest ABI and
+  Vulkan-loader probes are preserved under [`box64/`](box64/README.md), but
+  Steam did not reach a usable client window and no Proton game was launched.
 - GNOME Web 42.4 segfaults in GTK style-provider setup if WebKit's DMA-BUF
   renderer is enabled. Use `desktop/run-epiphany-panfrost`, which disables
   only that renderer; Panfrost composition and MediaCodec video decoding stay
-active. Epiphany session restore may reopen several Web processes and create
+  active. Epiphany session restore may reopen several Web processes and create
   avoidable memory pressure on the 6 GB test device; use `--private-instance`
   for isolated video smokes.
 

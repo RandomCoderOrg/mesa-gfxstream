@@ -39,6 +39,7 @@
 #include <X11/Xlib-xcb.h>
 
 #ifdef HAVE_DRI3
+#include <xcb/present.h>
 #include "loader_dri3_helper.h"
 #endif
 #endif
@@ -330,6 +331,15 @@ struct dri2_egl_surface
    int bytes_per_pixel;
    xcb_gcontext_t gc;
    xcb_gcontext_t swapgc;
+#ifdef HAVE_DRI3
+   xcb_present_event_t present_event_id;
+   xcb_special_event_t *present_special_event;
+   uint32_t present_serial;
+   uint32_t present_stamp;
+   xcb_pixmap_t present_pixmaps[3];
+   unsigned present_in_flight;
+   bool present_validated;
+#endif
 #endif
 
 #ifdef HAVE_WAYLAND_PLATFORM

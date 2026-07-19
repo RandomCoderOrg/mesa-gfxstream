@@ -1,0 +1,27 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -e
+
+# PRoot can provide the foreign-ELF dispatch that Android's unprivileged
+# binfmt_misc interface cannot. Put the directory containing this wrapper at
+# the front of PATH before invoking udroid; udroid will call it as `proot`.
+#
+# PRoot resolves the emulator path when it parses --qemu, so the rootfs option
+# must appear first even though udroid normally emits it later in the argv.
+rootfs=
+args=()
+for arg in "$@"; do
+   case "$arg" in
+      --rootfs=*) rootfs="$arg" ;;
+      *) args+=("$arg") ;;
+   esac
+done
+
+if [ -z "$rootfs" ]; then
+   echo "proot-box64: udroid did not provide --rootfs" >&2
+   exit 2
+fi
+
+exec /data/data/com.termux/files/usr/bin/proot \
+   "$rootfs" \
+   --qemu=/data/data/com.termux/files/home/box64-build-termux/box64 \
+   "${args[@]}"

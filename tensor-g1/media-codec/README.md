@@ -182,7 +182,13 @@ TENSOR_VAAPI=1 tensor-g1/desktop/run-firefox-panfrost \
 `TENSOR_VAAPI=1` disables Firefox's RDD subprocess sandbox because that sandbox
 cannot open the shared Unix socket and Android DMA heap inside PRoot. Content
 process sandboxing remains enabled. This is a security tradeoff and should stay
-an explicit per-launch opt-in.
+an explicit per-launch opt-in. It also enables `PAN_MALI_DMABUF_IMPORT=1` for
+the Panfrost-backed `drisw` screen. Firefox stays on X11 EGL because its stock
+Linux feature gate requires EGL for DMA-BUF and VA-API. This fork adds the
+reusable DMA-BUF/DRI3 Present queue to Mesa's X11 EGL swrast loader, so final
+swaps no longer use the CPU-upload fallback that failed to paint under Mutter.
+The dedicated profile disables VP9 and AV1 so sites such as YouTube request
+H.264, the only codec currently exposed by this VA frontend.
 
 The service accepts clients sequentially and remains available after a client
 disconnects. Pass `--once` after the socket path for a one-client smoke.
@@ -219,16 +225,45 @@ The two-second 1920x1080 60 FPS H.264 stream produced these checkpoints:
   byte-for-byte by MD5, while Android selected `c2.exynos.h264.decoder`.
 - Stock Firefox's unmodified `glxtest` reported `/dev/mali0`, its unmodified
   `vaapitest` reported H.264 hardware support, and an RDD video decode produced
-  a MediaCodec NV12 frame through the VA driver.
+  a MediaCodec NV12 frame through the VA driver. RDD imported its R8 and GR88
+  planes as Panfrost EGLImages, serialized the DMA-BUF surface to the parent,
+  and the renderer imported both planes again. Firefox logged zero-copy
+  `EGLImageTargetTexture2D` success for all four imports.
+- The tested local 1920x1080 60 FPS H.264 file visibly played through that
+  hardware path. The tested YouTube stream is a separate unresolved case: it
+  defaults to software VP9; after forcing AVC, Firefox initializes hardware
+  VA-API but `c2.exynos.h264.decoder` holds multiple output pictures. Firefox
+  synchronizes the first VA surface before it can submit that many future
+  pictures, `vaExportSurfaceHandle` times out, and Firefox falls back to
+  software H.264. Page and video presentation remain visible and responsive.
+
+The captured Yorushika run shows the post-recovery UI after enabling YouTube's
+Stats for nerds. Noto CJK fixes the previously missing Japanese title glyphs:
+
+![Firefox playing Yorushika with YouTube Stats for nerds](../screenshots/firefox-youtube-stats-for-nerds.png)
+
+At capture time YouTube reported codec `avc1.4d401e`, 640x360@24 current and
+optimal resolution, and 909 dropped frames out of 4078. Opening/toggling the
+Stats for nerds context action caused a significant transient stutter, hang,
+and visual glitch; playback recovered after about three seconds. The matching
+Firefox trace recorded three `vaExportSurfaceHandle` failures and software
+fallback, so the screenshot must not be read as sustained hardware decoding.
+The launch flags, counters, and decisive trace excerpt are preserved in
+[`logs/firefox-youtube-yorushika-debug.txt`](../logs/firefox-youtube-yorushika-debug.txt).
 - GNOME Web 42.4: `tensorh264dec` selected by WebKit/GStreamer and the 1080p60
   test pattern visibly painted under Panfrost when launched through
   `desktop/run-epiphany-panfrost --private-instance`.
 - MediaCodec initially reported a 1920x1088 padded slice height, then 1080.
   The plugin strips stride/slice padding before exposing 1920x1080 NV12.
 
-These results prove rootless hardware decode, cross-ABI transport, and the
-stock Firefox decode entry path. Firefox's decoded-frame presentation remains
-incomplete: the tested local video window was blank after a successful decode.
+These results prove rootless hardware decode, cross-ABI transport, the stock
+Firefox decode entry path, DMA-BUF/Panfrost texture import, and visible browser
+presentation. The initial blank window was caused by Mesa's X11 EGL swrast
+loader using its CPU-upload fallback. Disabling EGL made the browser visible
+through GLX, but also made stock Firefox disable DMA-BUF and VA-API, so it was
+not a hardware-video solution. The EGL loader now has the same reusable
+DMA-BUF/DRI3 Present queue as GLX. Firefox can therefore keep EGL and visibly
+display the hardware-decoded 1080p60 pattern.
 
 ## Current limitations
 
@@ -245,10 +280,17 @@ incomplete: the tested local video window was blank after a successful decode.
   seconds before display/compositor copies.
 - VA surfaces are allocated from `/dev/dma_heap/system` and export a standard
   DRM-PRIME NV12 descriptor, but MediaCodec output still crosses the socket as
-  a CPU copy. Direct MediaCodec output into those buffers is future work.
+  a CPU copy. The VA driver wraps that CPU write in `DMA_BUF_IOCTL_SYNC` before
+  Panfrost samples it. Direct MediaCodec output into those buffers is future
+  work.
 - Stock Firefox reaches and decodes through the VA driver only with its RDD
-  sandbox disabled. Its decoded frame did not paint in the tested window, so
-  DRM-PRIME/Panfrost import or Firefox presentation still needs diagnosis.
+  sandbox disabled. It uses X11 EGL plus this fork's reusable DMA-BUF/DRI3
+  presentation callback; forcing GLX disables Firefox's VA-API feature path.
+- Long-form/streaming H.264 can hit a MediaCodec/VA synchronization mismatch.
+  The Exynos Codec2 decoder queues several display-order outputs, while VA asks
+  this bridge to synchronize the first target surface immediately. The local
+  low-delay smoke works; the tested YouTube AVC stream currently falls back to
+  software after its first hardware submission.
 - GNOME Web/GStreamer works through the bridge when WebKit's DRM/GBM-based
   DMA-BUF renderer is disabled. The legacy WebKit renderer still composes with
   Panfrost, but decoded NV12 frames continue to cross the socket as CPU copies.

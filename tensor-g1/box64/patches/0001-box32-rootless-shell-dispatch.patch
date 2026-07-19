@@ -1,0 +1,68 @@
+diff --git a/src/wrapped32/wrappedlibc.c b/src/wrapped32/wrappedlibc.c
+index 4ca8ca39..6ad37bb0 100644
+--- a/src/wrapped32/wrappedlibc.c
++++ b/src/wrapped32/wrappedlibc.c
+@@ -1915,6 +1915,32 @@ EXPORT int32_t my32_nftw64(x64emu_t* emu, void* pathname, void* B, int32_t nope
+ EXPORT ptr_t my32__environ = 0; //char**
+ EXPORT ptr_t my32___environ = 0;  //char**
+ 
++EXPORT int32_t my32_system(x64emu_t* emu, const char* command)
++{
++    if(!command || !emu->context->bashpath)
++        return system(command);
++
++    pid_t child = fork();
++    if(child < 0)
++        return -1;
++    if(child == 0) {
++        execl(emu->context->box64path,
++              emu->context->box64path,
++              emu->context->bashpath,
++              "-c",
++              command,
++              (char*)NULL);
++        _exit(127);
++    }
++
++    int status;
++    while(waitpid(child, &status, 0) < 0) {
++        if(errno != EINTR)
++            return -1;
++    }
++    return status;
++}
++
+ EXPORT int32_t my32_execv(x64emu_t* emu, const char* path, ptr_t argv[])
+ {
+     int ret;
+@@ -2261,7 +2287,7 @@ EXPORT int32_t my32_posix_spawn(x64emu_t* emu, pid_t* pid, const char* fullpath,
+         for(int i=0; i<=n; ++i)
+             newenvp[i] = from_ptrv(envp[i]);
+     }
+-    if ((x86 || self)) {
++    if ((x86 || x64 || self)) {
+         // count argv...
+         int i=0;
+         while(argv[i]) ++i;
+@@ -2312,7 +2338,7 @@ EXPORT int32_t my32_posix_spawnp(x64emu_t* emu, pid_t* pid, const char* path,
+     }
+     printf_log(LOG_DEBUG, "posix_spawnp(%p, \"%s\", %p, %p, %p, %p), IsX86=%d / fullpath=\"%s\"\n", pid, path, actions, attrp, argv, envp, x86, fullpath);
+     free(fullpath);
+-    if ((x86 || self)) {
++    if ((x86 || x64 || self)) {
+         // count argv...
+         int i=0;
+         while(argv[i]) ++i;
+diff --git a/src/wrapped32/wrappedlibc_private.h b/src/wrapped32/wrappedlibc_private.h
+index fc780d77..7a12ec25 100644
+--- a/src/wrapped32/wrappedlibc_private.h
++++ b/src/wrapped32/wrappedlibc_private.h
+@@ -1841,7 +1841,7 @@ GO(syncfs, iEi)
+ //GOW(sysv_signal, pEip)
+ GO(tcgetpgrp, iEi)
+ GO(tcsetpgrp, iEii)
+-GOW(system, iEp)          // Need to wrap to use box86 if needed?
++GOM(system, iFEp)
+ //GO(tdelete, pEppp)
+ //GO(tdestroy, vEpp)
+ //GO(tfind, pEppp)
