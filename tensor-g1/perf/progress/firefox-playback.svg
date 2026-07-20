@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 410" role="img" aria-labelledby="title desc">
+  <title id="title">Estimated Firefox displayed cadence compared with source cadence</title>
+  <desc id="desc">The 1080p60 27.9 megabit stress stream delivered at most 1.1 percent of source cadence. The 360p24 clip reached 96.5 percent. Realistic 1080p30 reached 94.2 percent before severe thermal throttling and 84.6 percent after it.</desc>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fg: light-dark(#1f2328, #f0f6fc);
+      --muted: light-dark(#59636e, #9198a1);
+      --grid: light-dark(#d1d9e0, #3d444d);
+      --pass: light-dark(#1a7f37, #3fb950);
+      --stress: light-dark(#cf222e, #f85149);
+      --thermal: light-dark(#9a6700, #d29922);
+    }
+    text { fill: var(--fg); font: 400 13px system-ui, sans-serif; }
+    .label { font-weight: 500; }
+    .muted { fill: var(--muted); }
+    .grid { stroke: var(--grid); stroke-width: 1; }
+    .target { stroke: var(--fg); stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .pass { fill: var(--pass); }
+    .stress { fill: var(--stress); }
+    .thermal { fill: var(--thermal); }
+  </style>
+
+  <text class="label" x="28" y="28">Displayed cadence versus source cadence</text>
+  <line class="grid" x1="238" y1="50" x2="238" y2="330" />
+  <line class="grid" x1="333" y1="50" x2="333" y2="330" />
+  <line class="grid" x1="428" y1="50" x2="428" y2="330" />
+  <line class="grid" x1="523" y1="50" x2="523" y2="330" />
+  <line class="target" x1="618" y1="44" x2="618" y2="336" />
+
+  <text x="226" y="79" text-anchor="end">1080p60 · AHB + fence</text>
+  <rect class="stress" x="238" y="64" width="2" height="20" rx="2" />
+  <text class="label" x="630" y="79">0.4% · 99.43% drop</text>
+
+  <text x="226" y="123" text-anchor="end">1080p60 · DMA + fence</text>
+  <rect class="stress" x="238" y="108" width="4" height="20" rx="2" />
+  <text class="label" x="630" y="123">1.1% · 98.87% drop</text>
+
+  <text x="226" y="167" text-anchor="end">1080p60 · CPU + no fence</text>
+  <rect class="stress" x="238" y="152" width="1" height="20" rx="2" />
+  <text class="label" x="630" y="167">0.0% · 100% drop</text>
+
+  <text x="226" y="211" text-anchor="end">360p24 · AHB + fence</text>
+  <rect class="pass" x="238" y="196" width="367" height="20" rx="2" />
+  <text class="label" x="630" y="211">96.5% · 3.55% drop</text>
+
+  <text x="226" y="255" text-anchor="end">1080p30 · pre-throttle</text>
+  <rect class="pass" x="238" y="240" width="358" height="20" rx="2" />
+  <text class="label" x="630" y="255">94.2% · 5.83% drop</text>
+
+  <text x="226" y="299" text-anchor="end">1080p30 · thermal severe</text>
+  <rect class="thermal" x="238" y="284" width="321" height="20" rx="2" />
+  <text class="label" x="630" y="299">84.6% · 15.28% drop</text>
+
+  <text class="muted" x="238" y="357" text-anchor="middle">0%</text>
+  <text class="muted" x="333" y="357" text-anchor="middle">25%</text>
+  <text class="muted" x="428" y="357" text-anchor="middle">50%</text>
+  <text class="muted" x="523" y="357" text-anchor="middle">75%</text>
+  <text class="muted" x="618" y="357" text-anchor="middle">100% target</text>
+
+  <text class="muted" x="28" y="388">Android thermal status 3 capped little cores at 0.738/1.803 GHz and mid cores at 1.197/2.253 GHz.</text>
+</svg>

@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" role="img" aria-labelledby="title desc">
+  <title id="title">Available memory and swap use during the GNOME Firefox promotion</title>
+  <desc id="desc">Closing Android background applications increased available memory from 1.09 to 2.18 GiB and reduced used swap from 2.96 to 1.05 GiB. GNOME idle retained 2.21 GiB available and 1080p30 playback retained 1.57 GiB.</desc>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fg: light-dark(#1f2328, #f0f6fc);
+      --muted: light-dark(#59636e, #9198a1);
+      --grid: light-dark(#d1d9e0, #3d444d);
+      --available: light-dark(#0969da, #4493f8);
+      --swap: light-dark(#8250df, #a371f7);
+    }
+    text { fill: var(--fg); font: 400 13px system-ui, sans-serif; }
+    .label { font-weight: 500; }
+    .muted { fill: var(--muted); }
+    .grid { stroke: var(--grid); stroke-width: 1; }
+    .available { fill: var(--available); }
+    .swap { fill: var(--swap); }
+  </style>
+
+  <text class="label" x="28" y="28">Memory through the real-world promotion</text>
+  <line class="grid" x1="126" y1="52" x2="730" y2="52" />
+  <line class="grid" x1="126" y1="102" x2="730" y2="102" />
+  <line class="grid" x1="126" y1="152" x2="730" y2="152" />
+  <line class="grid" x1="126" y1="202" x2="730" y2="202" />
+  <line class="grid" x1="126" y1="252" x2="730" y2="252" />
+  <text class="muted" x="116" y="256" text-anchor="end">0 GiB</text>
+  <text class="muted" x="116" y="206" text-anchor="end">0.75</text>
+  <text class="muted" x="116" y="156" text-anchor="end">1.50</text>
+  <text class="muted" x="116" y="106" text-anchor="end">2.25</text>
+  <text class="muted" x="116" y="56" text-anchor="end">3.00</text>
+
+  <rect class="available" x="160" y="179" width="34" height="73" rx="2" />
+  <rect class="swap" x="201" y="55" width="34" height="197" rx="2" />
+  <text class="label" x="177" y="171" text-anchor="middle">1.09</text>
+  <text class="label" x="218" y="47" text-anchor="middle">2.96</text>
+  <text x="198" y="276" text-anchor="middle">Before</text>
+
+  <rect class="available" x="306" y="107" width="34" height="145" rx="2" />
+  <rect class="swap" x="347" y="182" width="34" height="70" rx="2" />
+  <text class="label" x="323" y="99" text-anchor="middle">2.18</text>
+  <text class="label" x="364" y="174" text-anchor="middle">1.05</text>
+  <text x="344" y="276" text-anchor="middle">Apps closed</text>
+
+  <rect class="available" x="452" y="105" width="34" height="147" rx="2" />
+  <rect class="swap" x="493" y="178" width="34" height="74" rx="2" />
+  <text class="label" x="469" y="97" text-anchor="middle">2.21</text>
+  <text class="label" x="510" y="170" text-anchor="middle">1.11</text>
+  <text x="490" y="276" text-anchor="middle">GNOME idle</text>
+
+  <rect class="available" x="598" y="147" width="34" height="105" rx="2" />
+  <rect class="swap" x="639" y="161" width="34" height="91" rx="2" />
+  <text class="label" x="615" y="139" text-anchor="middle">1.57</text>
+  <text class="label" x="656" y="153" text-anchor="middle">1.37</text>
+  <text x="636" y="276" text-anchor="middle">1080p30</text>
+
+  <rect class="available" x="126" y="288" width="10" height="10" />
+  <text class="muted" x="142" y="298">available RAM</text>
+  <rect class="swap" x="258" y="288" width="10" height="10" />
+  <text class="muted" x="274" y="298">used swap</text>
+</svg>

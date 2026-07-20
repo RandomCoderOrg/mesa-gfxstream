@@ -33,6 +33,7 @@ not PanVK, and the OpenGL path does not use ANGLE, Zink, VirGL, or Vulkan.
 src/                              patched Panfork/Mesa source
 tensor-g1/README.md               Panfork bring-up and verified status
 tensor-g1/panfork/                launchers, probes, and test utilities
+tensor-g1/perf/                   layered benchmarks, metrics, and Perfetto config
 tensor-g1/vulkan-wrapper/         pinned wrapper recipe and patch series
 tensor-g1/hybris-vulkan/          rootless glibc Vulkan launcher and DRI3 fix
 tensor-g1/screenshots/            unedited device captures
@@ -57,6 +58,14 @@ The rootless glibc Vulkan milestone adds a third route through sysvk, patched
 libhybris, and an X11 WSI layer. DMA-BUF allocation and DRI3 presentation are
 verified from Jammy without root, including a 1,800-frame soak. See
 [`tensor-g1/hybris-vulkan/README.md`](tensor-g1/hybris-vulkan/README.md).
+
+Performance work uses local media and promotes changes from component probes
+to direct-X browser playback and only then a full desktop. The checked-in
+[performance laboratory](tensor-g1/perf/README.md) records stage timers,
+process CPU/RSS/I/O, frame-delivery tails, optional short Perfetto traces, and
+upstream/spec-derived correctness cases. Its
+[current progress](tensor-g1/perf/README.md#current-progress-2026-07-20)
+includes memory and Firefox playback graphs for the latest GNOME promotion.
 
 ## Warning
 

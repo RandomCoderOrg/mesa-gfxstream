@@ -4,17 +4,45 @@
 
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
+#include <media/NdkImage.h>
+#include <media/NdkImageReader.h>
+
+#include <android/hardware_buffer.h>
+#include <android/native_window.h>
 
 #include <dlfcn.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 
 typedef bool (*binder_set_max_threads_fn)(uint32_t);
 typedef void (*binder_start_thread_pool_fn)(void);
 
 static void *binder_ndk;
+
+struct tensor_native_handle {
+   int version;
+   int num_fds;
+   int num_ints;
+   int data[];
+};
+
+typedef const struct tensor_native_handle *
+(*get_native_handle_fn)(const AHardwareBuffer *buffer);
+
+static uint64_t
+monotonic_ns(void)
+{
+   struct timespec now;
+   if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+      return 0;
+   return (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
+}
 
 static int
 start_binder_thread_pool(void)
@@ -131,6 +159,106 @@ find_nal(const uint8_t *data, size_t size, unsigned wanted_type,
    return 0;
 }
 
+static int
+acquire_surface_image(AImageReader *reader, unsigned *image_count, int quiet)
+{
+   for (unsigned attempt = 0; attempt < 100; attempt++) {
+      AImage *image = NULL;
+      int fence_fd = -1;
+      media_status_t status =
+         AImageReader_acquireNextImageAsync(reader, &image, &fence_fd);
+      if (status == AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE) {
+         usleep(1000);
+         continue;
+      }
+      if (status != AMEDIA_OK || !image) {
+         fprintf(stderr, "acquire image failed: %d\n", status);
+         return 0;
+      }
+
+      if (fence_fd >= 0) {
+         struct pollfd fence = {.fd = fence_fd, .events = POLLIN};
+         if (poll(&fence, 1, 1000) <= 0) {
+            fprintf(stderr, "image acquire fence did not signal\n");
+            close(fence_fd);
+            AImage_delete(image);
+            return 0;
+         }
+         close(fence_fd);
+      }
+
+      (*image_count)++;
+      if (quiet) {
+         AImage_delete(image);
+         return 1;
+      }
+
+      AHardwareBuffer *buffer = NULL;
+      AHardwareBuffer_Desc descriptor = {0};
+      int32_t width = 0, height = 0, planes = 0;
+      int64_t timestamp_ns = 0;
+      AImage_getWidth(image, &width);
+      AImage_getHeight(image, &height);
+      AImage_getTimestamp(image, &timestamp_ns);
+      AImage_getNumberOfPlanes(image, &planes);
+      if (AImage_getHardwareBuffer(image, &buffer) == AMEDIA_OK && buffer)
+         AHardwareBuffer_describe(buffer, &descriptor);
+
+      printf("image: count=%u image=%dx%d planes=%d timestamp-ns=%lld "
+             "ahb=%ux%u stride=%u layers=%u format=%u usage=0x%llx "
+             "acquire-fence=%s\n",
+             *image_count, width, height, planes, (long long)timestamp_ns,
+             descriptor.width, descriptor.height, descriptor.stride,
+             descriptor.layers, descriptor.format,
+             (unsigned long long)descriptor.usage,
+             fence_fd >= 0 ? "signaled" : "none");
+      if (*image_count == 1 && buffer) {
+         for (int32_t plane = 0; plane < planes; plane++) {
+            uint8_t *plane_data = NULL;
+            int data_length = 0, row_stride = 0, pixel_stride = 0;
+            media_status_t data_status = AImage_getPlaneData(
+               image, plane, &plane_data, &data_length);
+            AImage_getPlaneRowStride(image, plane, &row_stride);
+            AImage_getPlanePixelStride(image, plane, &pixel_stride);
+            printf("plane: index=%d status=%d length=%d row-stride=%d "
+                   "pixel-stride=%d first=%u\n",
+                   plane, data_status, data_length, row_stride, pixel_stride,
+                   data_status == AMEDIA_OK && plane_data && data_length
+                      ? plane_data[0]
+                      : 0);
+         }
+         void *system_android =
+            dlopen("/system/lib64/libandroid.so", RTLD_NOW | RTLD_LOCAL);
+         get_native_handle_fn get_native_handle =
+            system_android
+               ? (get_native_handle_fn)dlsym(
+                    system_android, "AHardwareBuffer_getNativeHandle")
+               : NULL;
+         const struct tensor_native_handle *handle =
+            get_native_handle ? get_native_handle(buffer) : NULL;
+         if (handle) {
+            printf("native-handle: fds=%d ints=%d", handle->num_fds,
+                   handle->num_ints);
+            for (int i = 0; i < handle->num_fds; i++) {
+               struct stat status;
+               long long size = fstat(handle->data[i], &status) == 0
+                                   ? (long long)status.st_size
+                                   : -1;
+               printf(" fd%d=%d size%d=%lld", i, handle->data[i], i, size);
+            }
+            putchar('\n');
+         }
+         if (system_android)
+            dlclose(system_android);
+      }
+      AImage_delete(image);
+      return 1;
+   }
+
+   fprintf(stderr, "timed out waiting for an ImageReader buffer\n");
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -174,6 +302,13 @@ main(int argc, char **argv)
    AMediaCodec *codec = argc == 3 ? AMediaCodec_createCodecByName(argv[2])
                                   : AMediaCodec_createDecoderByType("video/avc");
    AMediaFormat *format = AMediaFormat_new();
+   AImageReader *reader = NULL;
+   ANativeWindow *window = NULL;
+   int private_output = getenv("TENSOR_MEDIACODEC_PRIVATE") != NULL;
+   int quiet = getenv("TENSOR_MEDIACODEC_QUIET") != NULL;
+   int surface_output =
+      private_output || getenv("TENSOR_MEDIACODEC_SURFACE") != NULL;
+   media_status_t status = AMEDIA_OK;
    if (!codec || !format) {
       fprintf(stderr, "failed to create MediaCodec or MediaFormat\n");
       free(input);
@@ -199,7 +334,23 @@ main(int argc, char **argv)
          AMediaFormat_setBuffer(format, "csd-1", input + pps_offset, pps_size);
    }
 
-   media_status_t status = AMediaCodec_configure(codec, format, NULL, NULL, 0);
+   if (surface_output) {
+      int32_t image_format = private_output ? AIMAGE_FORMAT_PRIVATE
+                                            : AIMAGE_FORMAT_YUV_420_888;
+      uint64_t usage = private_output
+                          ? AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE
+                          : AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN;
+      status = AImageReader_newWithUsage(
+         width, height, image_format, usage, 8, &reader);
+      if (status != AMEDIA_OK || !reader ||
+          AImageReader_getWindow(reader, &window) != AMEDIA_OK || !window) {
+         fprintf(stderr, "failed to create MediaCodec ImageReader: %d\n",
+                 status);
+         goto fail;
+      }
+   }
+
+   status = AMediaCodec_configure(codec, format, window, NULL, 0);
    if (status == AMEDIA_OK)
       status = AMediaCodec_start(codec);
    if (status != AMEDIA_OK) {
@@ -208,9 +359,9 @@ main(int argc, char **argv)
       goto fail;
    }
 
-   size_t access_units[256];
+   size_t access_units[4096];
    unsigned access_unit_count =
-      find_access_units(input, input_size, access_units, 256);
+      find_access_units(input, input_size, access_units, 4096);
    if (!access_unit_count) {
       access_units[0] = 0;
       access_unit_count = 1;
@@ -220,9 +371,13 @@ main(int argc, char **argv)
    int eos_queued = 0;
    unsigned decoded_buffers = 0;
    size_t decoded_bytes = 0;
+   unsigned acquired_images = 0;
    int saw_eos = 0;
 
-   for (unsigned attempt = 0; attempt < 500 && !saw_eos; ++attempt) {
+   unsigned maximum_attempts = access_unit_count * 3u + 100u;
+   uint64_t run_started_ns = monotonic_ns();
+   for (unsigned attempt = 0; attempt < maximum_attempts && !saw_eos;
+        ++attempt) {
       if (!eos_queued) {
          ssize_t input_index = AMediaCodec_dequeueInputBuffer(codec, 10000);
          if (input_index >= 0) {
@@ -272,7 +427,9 @@ main(int argc, char **argv)
 
       if (output_index == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
          AMediaFormat *output_format = AMediaCodec_getOutputFormat(codec);
-         printf("output-format: %s\n", AMediaFormat_toString(output_format));
+         if (!quiet)
+            printf("output-format: %s\n",
+                   AMediaFormat_toString(output_format));
          AMediaFormat_delete(output_format);
       }
       if (output_index < 0)
@@ -281,25 +438,46 @@ main(int argc, char **argv)
       size_t output_capacity = 0;
       uint8_t *output = AMediaCodec_getOutputBuffer(
          codec, (size_t)output_index, &output_capacity);
-      if (info.size > 0 && output) {
+      if (info.size > 0 && (surface_output || output)) {
          ++decoded_buffers;
          decoded_bytes += (size_t)info.size;
       }
       saw_eos = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
-      printf("output: size=%d capacity=%zu flags=0x%x pts=%lld\n", info.size,
-             output_capacity, info.flags, (long long)info.presentationTimeUs);
-      AMediaCodec_releaseOutputBuffer(codec, (size_t)output_index, false);
+      if (!quiet)
+         printf("output: size=%d capacity=%zu flags=0x%x pts=%lld\n",
+                info.size, output_capacity, info.flags,
+                (long long)info.presentationTimeUs);
+      AMediaCodec_releaseOutputBuffer(codec, (size_t)output_index,
+                                      surface_output && info.size > 0);
+      if (surface_output && info.size > 0 &&
+          !acquire_surface_image(reader, &acquired_images, quiet))
+         goto fail_started;
    }
 
+   uint64_t elapsed_ns = monotonic_ns() - run_started_ns;
+   double decoded_fps = elapsed_ns ? 1e9 * decoded_buffers / elapsed_ns : 0.0;
+
    printf("codec=%s input=%zu access-units=%u decoded-buffers=%u "
-          "decoded-bytes=%zu eos=%d\n",
+          "decoded-bytes=%zu images=%u eos=%d\n",
           name ? name : "(unknown)", input_size, access_unit_count,
-          decoded_buffers, decoded_bytes, saw_eos);
+          decoded_buffers, decoded_bytes, acquired_images, saw_eos);
+   printf("{\"schema\":\"tensor-perf-v1\",\"kind\":\"benchmark\","
+          "\"name\":\"mediacodec-decode\",\"elapsed_ns\":%llu,"
+          "\"input_bytes\":%zu,\"access_units\":%u,"
+          "\"decoded_frames\":%u,\"decoded_bytes\":%zu,"
+          "\"acquired_images\":%u,\"decoded_fps\":%.6f,"
+          "\"surface_output\":%s,\"private_output\":%s,\"eos\":%s}\n",
+          (unsigned long long)elapsed_ns, input_size, access_unit_count,
+          decoded_buffers, decoded_bytes, acquired_images, decoded_fps,
+          surface_output ? "true" : "false",
+          private_output ? "true" : "false", saw_eos ? "true" : "false");
 
    AMediaCodec_stop(codec);
    if (name)
       AMediaCodec_releaseName(codec, name);
    AMediaCodec_delete(codec);
+   if (reader)
+      AImageReader_delete(reader);
    AMediaFormat_delete(format);
    free(input);
    return decoded_buffers && saw_eos ? 0 : 1;
@@ -310,6 +488,8 @@ fail:
    if (name)
       AMediaCodec_releaseName(codec, name);
    AMediaCodec_delete(codec);
+   if (reader)
+      AImageReader_delete(reader);
    AMediaFormat_delete(format);
    free(input);
    return 1;

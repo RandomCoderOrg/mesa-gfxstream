@@ -1,0 +1,189 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tensor video loop probe</title>
+<style>
+  html, body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #000;
+    color: #fff;
+    font: 16px/1.35 monospace;
+  }
+
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  output {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    padding: 8px 10px;
+    background: rgb(0 0 0 / 75%);
+    white-space: pre;
+    pointer-events: none;
+  }
+</style>
+<video autoplay muted loop playsinline></video>
+<output>loading</output>
+<script>
+  const video = document.querySelector("video");
+  const output = document.querySelector("output");
+  const params = new URLSearchParams(location.search);
+  video.src = params.get("src") || "file:///tmp/tensor-1080p60.mp4";
+
+  const warmupSeconds = Number(params.get("warmup") || 2);
+  const durationSeconds = Number(params.get("duration") || 12);
+  const runId = params.get("run_id") ||
+    (crypto.randomUUID?.() ?? `firefox-${Date.now()}`);
+
+  let callbacks = 0;
+  let lastMediaTime = 0;
+  const started = performance.now();
+  let measuredFrom = started + warmupSeconds * 1000;
+  let measuredCallbacks = 0;
+  let callbackGaps = [];
+  let processingDurations = [];
+  let lateFrames = 0;
+  let callbackDiscontinuities = 0;
+  let previousCallbackTime;
+  let previousPresentedFrames;
+  let baselineTotal = 0;
+  let baselineDropped = 0;
+  let finalized = false;
+  let frozenResult;
+
+  function percentile(values, fraction) {
+    if (!values.length)
+      return 0;
+    const ordered = [...values].sort((a, b) => a - b);
+    return ordered[Math.ceil(ordered.length * fraction) - 1];
+  }
+
+  function result(final = false) {
+    if (finalized && frozenResult)
+      return frozenResult;
+    const quality = video.getVideoPlaybackQuality?.();
+    const now = performance.now();
+    const measuredSeconds = Math.max(0, (now - measuredFrom) / 1000);
+    const total = Math.max(0, (quality?.totalVideoFrames ?? 0) - baselineTotal);
+    const dropped = Math.max(0,
+      (quality?.droppedVideoFrames ?? 0) - baselineDropped);
+    const displayed = Math.max(0, total - dropped);
+    const callbackFrameSpan = measuredCallbacks + callbackDiscontinuities;
+    return {
+      schema: "tensor-perf-v1",
+      kind: "benchmark",
+      name: "firefox-local-video",
+      run_id: runId,
+      final,
+      source_width: video.videoWidth,
+      source_height: video.videoHeight,
+      measured_seconds: measuredSeconds,
+      total_frames: total,
+      dropped_frames: dropped,
+      dropped_percent: total ? 100 * dropped / total : 0,
+      displayed_frames: displayed,
+      displayed_fps: measuredSeconds ? displayed / measuredSeconds : 0,
+      presented_callbacks: measuredCallbacks,
+      presented_fps: measuredSeconds ? measuredCallbacks / measuredSeconds : 0,
+      callback_frame_span: callbackFrameSpan,
+      callback_coverage_percent: callbackFrameSpan ?
+        100 * measuredCallbacks / callbackFrameSpan : 0,
+      callback_gap_p50_ms: percentile(callbackGaps, .5),
+      callback_gap_p95_ms: percentile(callbackGaps, .95),
+      callback_gap_max_ms: callbackGaps.length ? Math.max(...callbackGaps) : 0,
+      processing_p50_ms: percentile(processingDurations, .5),
+      processing_p95_ms: percentile(processingDurations, .95),
+      late_frames: lateFrames,
+      callback_discontinuities: callbackDiscontinuities,
+    };
+  }
+
+  function show() {
+    const quality = video.getVideoPlaybackQuality?.();
+    const elapsed = (performance.now() - started) / 1000;
+    const current = result();
+    output.textContent = [
+      `source: ${video.videoWidth}x${video.videoHeight}`,
+      `elapsed: ${elapsed.toFixed(3)}s`,
+      `time: ${video.currentTime.toFixed(3)}s`,
+      `readyState: ${video.readyState}`,
+      `presented callbacks: ${callbacks}`,
+      `callback media time: ${lastMediaTime.toFixed(3)}s`,
+      `warmup: ${warmupSeconds.toFixed(1)}s  measured: ${current.measured_seconds.toFixed(2)}s / ${durationSeconds.toFixed(1)}s`,
+      `total frames: ${current.total_frames}`,
+      `dropped frames: ${current.dropped_frames} (${current.dropped_percent.toFixed(2)}%)`,
+      `displayed frames/fps: ${current.displayed_frames} / ${current.displayed_fps.toFixed(2)}`,
+      `corrupted frames: ${quality?.corruptedVideoFrames ?? "n/a"}`,
+      `callback fps/coverage: ${current.presented_fps.toFixed(2)} / ${current.callback_coverage_percent.toFixed(2)}%`,
+      `callback gap p50/p95/max: ${current.callback_gap_p50_ms.toFixed(2)} / ${current.callback_gap_p95_ms.toFixed(2)} / ${current.callback_gap_max_ms.toFixed(2)} ms`,
+      `late/discontinuous: ${current.late_frames} / ${current.callback_discontinuities}`,
+    ].join("\n");
+    if (!finalized) {
+      document.title = [
+        "Tensor video loop probe",
+        `display=${current.displayed_fps.toFixed(2)}`,
+        `callback=${current.presented_fps.toFixed(2)}`,
+        `drop=${current.dropped_percent.toFixed(2)}%`,
+        `p95=${current.callback_gap_p95_ms.toFixed(2)}ms`,
+      ].join(" | ");
+    }
+    window.tensorPerfResult = current;
+  }
+
+  function frame(now, metadata) {
+    callbacks++;
+    lastMediaTime = metadata.mediaTime;
+    if (now >= measuredFrom && !finalized) {
+      if (!measuredCallbacks) {
+        const quality = video.getVideoPlaybackQuality?.();
+        baselineTotal = quality?.totalVideoFrames ?? 0;
+        baselineDropped = quality?.droppedVideoFrames ?? 0;
+        previousCallbackTime = now;
+        previousPresentedFrames = metadata.presentedFrames;
+      } else {
+        callbackGaps.push(now - previousCallbackTime);
+        if (metadata.presentedFrames > previousPresentedFrames + 1)
+          callbackDiscontinuities += metadata.presentedFrames -
+            previousPresentedFrames - 1;
+        previousCallbackTime = now;
+        previousPresentedFrames = metadata.presentedFrames;
+      }
+      measuredCallbacks++;
+      if (Number.isFinite(metadata.processingDuration))
+        processingDurations.push(metadata.processingDuration * 1000);
+      if (Number.isFinite(metadata.expectedDisplayTime) &&
+          metadata.expectedDisplayTime < now)
+        lateFrames++;
+    }
+    video.requestVideoFrameCallback(frame);
+  }
+
+  if (video.requestVideoFrameCallback)
+    video.requestVideoFrameCallback(frame);
+  setInterval(show, 250);
+  setInterval(() => {
+    if (!finalized)
+      console.info(`TENSOR_PERF ${JSON.stringify(result())}`);
+  }, 1000);
+  setTimeout(() => {
+    const finalResult = result(true);
+    frozenResult = finalResult;
+    finalized = true;
+    window.tensorPerfResult = frozenResult;
+    console.info(`TENSOR_PERF ${JSON.stringify(frozenResult)}`);
+    document.title = [
+      "Tensor video loop probe FINAL",
+      `display=${frozenResult.displayed_fps.toFixed(2)}`,
+      `callback=${frozenResult.presented_fps.toFixed(2)}`,
+      `drop=${frozenResult.dropped_percent.toFixed(2)}%`,
+      `p95=${frozenResult.callback_gap_p95_ms.toFixed(2)}ms`,
+    ].join(" | ");
+  }, (warmupSeconds + durationSeconds) * 1000);
+  show();
+</script>

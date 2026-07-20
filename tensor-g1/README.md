@@ -10,7 +10,9 @@ MediaCodec bridge is documented in
 Vulkan integration is documented in
 [`vulkan-wrapper/README.md`](vulkan-wrapper/README.md). The unfinished
 Box64/Steam compatibility experiments are recorded in
-[`box64/README.md`](box64/README.md).
+[`box64/README.md`](box64/README.md). Repeatable micro-to-macro measurement,
+browser-free lifecycle probes, and upstream-derived coverage are documented in
+the [`perf/` laboratory](perf/README.md).
 
 > [!WARNING]
 > This is a device bring-up branch made from deliberately dirty, invasive
@@ -375,8 +377,9 @@ RDD process decodes local H.264 through Android MediaCodec. The Panfrost-backed
 `drisw` frontend now publishes Mesa's full DRI image extension when
 `PAN_MALI_DMABUF_IMPORT=1`; this lets Firefox import the exported NV12 R8 and
 GR88 planes as EGLImages in both RDD and the parent renderer. VA-API mode turns
-that opt-in on automatically and ends the DMA-BUF CPU-write epoch before the
-GPU samples a decoded frame. Firefox remains on X11 EGL, as required by its
+that opt-in on automatically. When release-fence mode is selected, the wrapper
+also enables the rootless JM DMA-BUF wait so Panfrost does not submit a sampling
+batch until the MediaCodec writer fence signals. Firefox remains on X11 EGL, as required by its
 stock VA-API feature gate, while the new EGL DRI3 presenter displays its final
 swaps. The tested 1920x1080 60 FPS H.264 pattern painted visibly while playing
 in stock Firefox. The RDD sandbox currently must be disabled per launch. The
@@ -392,6 +395,22 @@ The tested Yorushika YouTube stream stayed on hardware decode across its
 640x368-to-864x480 adaptive transition for 4,672 frames with no sync/export
 failure, decoder fallback, or GPU timeout. This is intentionally a dirty
 rootless workaround, not an upstream-quality explicit-fence implementation.
+
+The browser-free concurrent EGL probe reproduced the missing consumer wait:
+with the same release-fenced surfaces but no Panfrost wait, 41/48 samples raced
+the producer and captured stale pixels. `PAN_MALI_DMABUF_SYNC_WAIT=1` reduced
+both early completions and finalized-pixel mismatches to 0/48; a five-run
+follow-up produced 80/80 correct samples. This flag is deliberately opt-in and
+currently uses a blocking userspace `poll(POLLIN)` in the JM submit path.
+
+The current full-stack checkpoint is recorded in the
+[`perf/` progress graphs](perf/README.md#current-progress-2026-07-20). After
+closing background Android applications, GNOME and stock Firefox retained more
+than 1.5 GiB available RAM. A realistic local 1080p30 stream delivered about
+28.2 displayed frames/s with 5.83% drops before Android entered thermal status
+3; the throttled follow-up fell to 25.39 frames/s with 15.28% drops. The
+27.9 Mbit/s 1080p60 stress stream remains beyond the CPU-copy bridge, so direct
+MediaCodec AHardwareBuffer output is the next major performance boundary.
 
 GNOME Web can use that bridge. WebKitGTK's DMA-BUF renderer must be disabled
 because it assumes a DRM/GBM device, while this port exposes Kbase

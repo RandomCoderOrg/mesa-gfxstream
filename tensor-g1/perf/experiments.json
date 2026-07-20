@@ -1,0 +1,89 @@
+{
+  "schema": "tensor-experiments-v1",
+  "rules": {
+    "repetitions": 5,
+    "warmup_runs": 1,
+    "default_duration_seconds": 12,
+    "cooldown_seconds": 20,
+    "thermal_policy": "record Android status and reject severe-or-higher comparisons",
+    "network": "offline-local-assets-only",
+    "change_policy": "one-independent-variable-per-comparison"
+  },
+  "layers": [
+    {
+      "id": "mc-buffer",
+      "cost": "low",
+      "subject": "MediaCodec byte-buffer decode",
+      "tool": "mediacodec-decode",
+      "primary_metrics": ["decoded_fps", "output_dequeue_us", "process_cpu_cores"],
+      "derived_from": ["Android NDK MediaCodec contract", "AOSP CTS media decoder cases"]
+    },
+    {
+      "id": "mc-ahb",
+      "cost": "low",
+      "subject": "MediaCodec to AImageReader/AHardwareBuffer",
+      "tool": "TENSOR_MEDIACODEC_PRIVATE=1 mediacodec-decode",
+      "primary_metrics": ["decoded_fps", "acquire_fence_wait_us", "process_cpu_cores"],
+      "derived_from": ["Android NDK AImageReader async acquire contract", "AOSP ImageReaderDecoderTest"]
+    },
+    {
+      "id": "bridge-raw",
+      "cost": "low",
+      "subject": "cross-ABI socket raw-frame transport",
+      "tool": "bridge-client",
+      "primary_metrics": ["decoded_fps", "socket_mib", "process_cpu_cores"],
+      "derived_from": ["bridge protocol v1"]
+    },
+    {
+      "id": "bridge-surface-lifecycle",
+      "cost": "low",
+      "subject": "Firefox-like register, submit, ACK/export, delayed output lifecycle",
+      "tool": "surface-lifecycle-bench",
+      "primary_metrics": ["ack_p50_us", "ack_p95_us", "ready_at_ack_percent", "pts_mismatch_count"],
+      "derived_from": ["VA-API surface lifecycle", "Linux DMA-BUF synchronization contract"]
+    },
+    {
+      "id": "egl-dmabuf-consumer",
+      "cost": "low",
+      "subject": "concurrent Panfrost sampling of deferred MediaCodec DMA-BUF surfaces",
+      "tool": "run-egl-consumer-bench.sh",
+      "primary_metrics": ["gpu_pixel_mismatches", "gpu_unready_after_sample", "gpu_sample_p50_us", "gpu_sample_p95_us", "decoded_fps"],
+      "promotion_gate": "zero finalized-pixel mismatches and zero samples completed before their writer fence",
+      "derived_from": ["Linux DMA-BUF poll semantics", "EGL_EXT_image_dma_buf_import", "Firefox decoder and compositor process split"]
+    },
+    {
+      "id": "va-ffmpeg",
+      "cost": "medium",
+      "subject": "VA-API frontend and DRM-PRIME export/import",
+      "tool": "run-vaapi-correctness.sh plus optional LIBVA_TRACE",
+      "primary_metrics": ["exact_match", "hardware_frames", "service_status", "teardown_clean", "decoded_fps", "process_cpu_cores"],
+      "derived_from": ["libva API", "FFmpeg FATE-style framemd5 comparison"]
+    },
+    {
+      "id": "present-x11",
+      "cost": "medium",
+      "subject": "Panfrost render and Termux:X11 Present",
+      "tool": "egl-dmabuf-dri3 and glmark2 fixed scenes",
+      "primary_metrics": ["present_fps", "x11_cpu_cores", "frame_p95_ms"],
+      "derived_from": ["DRI3/Present protocol", "Mesa dEQP and trace practices"]
+    },
+    {
+      "id": "browser-local",
+      "cost": "high",
+      "subject": "stock Firefox local-file playback without GNOME",
+      "tool": "firefox-loop-player.html",
+      "primary_metrics": ["displayed_fps", "dropped_percent", "callback_coverage_percent", "firefox_cpu_cores", "x11_cpu_cores", "thermal_status"],
+      "promotion_gate": "run only after lower layers pass their budget",
+      "derived_from": ["requestVideoFrameCallback semantics", "VideoPlaybackQuality counters"]
+    },
+    {
+      "id": "desktop-macro",
+      "cost": "very-high",
+      "subject": "GNOME plus Firefox end-to-end playback",
+      "tool": "Perfetto plus local video",
+      "primary_metrics": ["displayed_fps", "dropped_percent", "callback_coverage_percent", "jank_percent", "cpu_frequency_residency", "thermal_status"],
+      "promotion_gate": "run only after browser-local is stable",
+      "derived_from": ["Perfetto system tracing", "Android FrameTimeline"]
+    }
+  ]
+}

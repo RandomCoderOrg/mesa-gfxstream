@@ -19,6 +19,8 @@ enum tmc_message_type {
    /* Register a DMA-BUF destination for the frame identified by pts_us.
     * arg0/arg1/arg2 carry stride, slice height, and mapped byte size. */
    TMC_SURFACE = 5,
+   /* Explicit clean client shutdown. No response is required. */
+   TMC_CLOSE = 6,
    TMC_READY = 101,
    TMC_FORMAT = 102,
    TMC_FRAME = 103,

@@ -37,7 +37,7 @@ flowchart LR
     SVC -->|"raw frame copy"| SOCK
     SOCK -->|"crop stride and slice padding"| GST
     VA -->|"register DMA-BUF with SCM_RIGHTS"| SVC
-    SVC -->|"one CPU copy into immutable layout"| HEAP["/dev/dma_heap/system\nDRM-PRIME export"]
+    SVC -->|"one CPU copy + signal implicit fence"| HEAP["/dev/dma_heap/system-uncached\nDRM-PRIME export"]
     VA --> HEAP
     GST -->|"tightly packed NV12"| APP
     HEAP --> APP
@@ -57,8 +57,12 @@ library using `dlopen` and `dlsym`.
 | `mediacodec-probe.c` | Termux/Bionic | Configure/start/stop codec discovery |
 | `mediacodec-decode.c` | Termux/Bionic | Standalone Annex-B decode smoke |
 | `mediacodec-service.c` | Termux/Bionic | Persistent single-client-at-a-time socket service |
+| `release-fence.c` | Termux/Bionic | Kbase soft-event fence imported as the DMA-BUF's implicit writer fence |
+| `dmabuf-release-fence-probe.c` | Termux/Bionic | Rootless Kbase/sync-file/DMA-BUF permission and signal smoke |
 | `bridge-protocol.h` | Both ABIs | Versioned 40-byte local message header and shared-surface capability |
 | `bridge-client.c` | Jammy/glibc | End-to-end bridge validation client |
+| `surface-lifecycle-bench.c` | Jammy/glibc | Browser-free DMA-BUF register/submit/ACK ordering and latency benchmark |
+| `egl-nv12-consumer.c` | Jammy/glibc | Surfaceless Panfrost R8/GR88 importer and finalized-pixel correctness probe |
 | `gsttensorh264dec.c` | Jammy/glibc | GStreamer `GstVideoDecoder` element |
 | `va/tensor_drv_video.c` | Jammy/glibc | H.264 VA-API frontend for FFmpeg and stock Firefox |
 | `video-benchmark.html` | Jammy browser | Local playback page with one-second decoded/dropped-frame counters |
@@ -74,12 +78,18 @@ clang --target=aarch64-linux-android28 -std=c11 -O2 -Wall -Wextra \
 
 clang --target=aarch64-linux-android28 -std=c11 -O2 -Wall -Wextra \
   tensor-g1/media-codec/mediacodec-decode.c \
-  -lmediandk -ldl -o mediacodec-decode
+  -lmediandk -landroid -ldl -o mediacodec-decode
 
 clang --target=aarch64-linux-android28 -std=c11 -O2 -Wall -Wextra \
-  -Itensor-g1/media-codec \
+  -Iinclude -Isrc/panfrost/base/include -Itensor-g1/media-codec \
   tensor-g1/media-codec/mediacodec-service.c \
+  tensor-g1/media-codec/release-fence.c \
   -lmediandk -ldl -o mediacodec-service
+
+clang --target=aarch64-linux-android28 -std=c11 -O2 -Wall -Wextra \
+  -Iinclude -Isrc/panfrost/base/include -Itensor-g1/media-codec \
+  tensor-g1/media-codec/dmabuf-release-fence-probe.c \
+  -o dmabuf-release-fence-probe
 ```
 
 Basic discovery and standalone decode:
@@ -121,6 +131,16 @@ Build the validation client and plugin inside Jammy:
 cc -std=c11 -O2 -Wall -Wextra -Itensor-g1/media-codec \
   tensor-g1/media-codec/bridge-client.c -o bridge-client
 
+cc -std=c11 -O2 -Wall -Wextra -Werror -Itensor-g1/media-codec \
+  tensor-g1/media-codec/surface-lifecycle-bench.c \
+  -o surface-lifecycle-bench
+
+cc -std=c11 -O2 -Wall -Wextra -Werror -DTMC_EGL_CONSUMER \
+  -Itensor-g1/media-codec \
+  tensor-g1/media-codec/surface-lifecycle-bench.c \
+  tensor-g1/media-codec/egl-nv12-consumer.c \
+  -lEGL -lGLESv2 -o surface-lifecycle-egl-bench
+
 cc -std=c11 -O2 -Wall -Wextra -fPIC -shared \
   -Itensor-g1/media-codec \
   tensor-g1/media-codec/gsttensorh264dec.c \
@@ -160,6 +180,18 @@ nohup ./mediacodec-service \
   >mediacodec-service.log 2>&1 </dev/null &
 ```
 
+For deferred Firefox exports with implicit synchronization, enable the Kbase
+release-fence path and use uncached VA surfaces:
+
+```sh
+TENSOR_MEDIACODEC_RELEASE_FENCE=1 \
+nohup ./mediacodec-service "$PREFIX/tmp/tensor-mediacodec.sock" \
+  >mediacodec-service.log 2>&1 </dev/null &
+
+TENSOR_VAAPI=1 TENSOR_VA_RELEASE_FENCE=1 \
+  tensor-g1/desktop/run-firefox-panfrost
+```
+
 Then run either smoke from Jammy:
 
 ```sh
@@ -194,7 +226,10 @@ The dedicated profile disables VP9 and AV1 so sites such as YouTube request
 H.264, the only codec currently exposed by this VA frontend.
 
 The service accepts clients sequentially and remains available after a client
-disconnects. Pass `--once` after the socket path for a one-client smoke.
+disconnects. Pass `--once` after the socket path for a one-client smoke. A VA
+context that submitted frames sends input EOS and waits for output EOS before
+closing; this avoids racing Android's CodecLooper during MediaCodec teardown.
+An unused context sends the explicit clean-close protocol message instead.
 
 Optional environment variables:
 
@@ -203,9 +238,29 @@ Optional environment variables:
 | `TENSOR_MEDIACODEC_SOCKET` | `/tmp/tensor-mediacodec.sock` | Plugin socket path |
 | `TENSOR_MEDIACODEC_COMPONENT` | `c2.exynos.h264.decoder` | Android component name |
 | `TENSOR_MEDIACODEC_INBAND_CSD` | unset | Standalone decoder uses in-band SPS/PPS |
+| `TENSOR_MEDIACODEC_QUIET` | unset | Suppress per-frame standalone decoder logs so logging cost does not contaminate throughput |
 | `TENSOR_VA_DMA_HEAP` | `system` | DMA heap used for VA decode surfaces |
+| `TENSOR_VA_RELEASE_FENCE` | unset | Firefox wrapper selects `system-uncached`; pair with the native release-fence mode |
 | `TENSOR_VA_DEBUG` | unset | Log VA surface creation, decode, and export calls |
 | `TENSOR_VA_DEFERRED_EXPORT` | `1` in the Firefox wrapper | Export a preinitialized VA DMA-BUF before Exynos returns its delayed frame; set `0` for strict synchronous behavior |
+| `TENSOR_PERF_OUTPUT` | unset | Append low-overhead `tensor-perf-v1` JSONL stage/session metrics; `-` writes to stderr |
+| `TENSOR_MEDIACODEC_REMAP_LATEST` | unset | Dirty experiment: deliver delayed output into the newest registered surface and wait briefly before ACK |
+| `TENSOR_MEDIACODEC_RELEASE_FENCE` | unset | Import a Kbase-controlled pending write fence into each strict PTS-mapped DMA-BUF and signal it after the CPU copy |
+| `PAN_MALI_DMABUF_SYNC_WAIT` | unset | Dirty rootless JM fallback: wait for imported DMA-BUF writer fences before Panfrost batch submission; the Firefox wrapper enables it only with `TENSOR_VA_RELEASE_FENCE=1` |
+
+Release-fence mode still obeys the separate mmap coherency contract. The
+service begins `DMA_BUF_SYNC_WRITE` before importing its pending write fence,
+ends the CPU epoch after the NV12 copy, and only then signals the fence. This
+ordering avoids waiting on the producer's own fence while preserving cache
+maintenance. The measured START+END cost was about 5 microseconds per 1080p
+frame on the Pixel 6a.
+
+For repeatable performance work, process sampling, the Firefox-free surface
+lifecycle benchmark, Perfetto configuration, experiment tiers, and comparison
+tooling are documented in [`../perf/README.md`](../perf/README.md).
+The browser probe reports decoder-derived `displayed_fps` separately from the
+main-thread callback rate and callback coverage; use the former for delivered
+cadence and the latter to detect an overloaded observer.
 
 ## Pixel 6a results
 
@@ -227,6 +282,18 @@ The two-second 1920x1080 60 FPS H.264 stream produced these checkpoints:
 - GStreamer element: 120/120 NV12 frames delivered to `fakesink`.
 - VA-API/FFmpeg: ten downloaded 1920x1080 NV12 frames matched software decode
   byte-for-byte by MD5, while Android selected `c2.exynos.h264.decoder`.
+- The promoted VA correctness probe matched all 360 hardware frames against
+  software FFmpeg byte-for-byte, including PTS, duration and size; FFmpeg,
+  service and software decode all exited zero with a clean EOS teardown.
+- Kbase release fences protected 1,080/1,080 measured strict PTS exports with
+  zero unsafe ACK boundaries. Region-only neutral padding reduced the service
+  clear from 3.13 MB to 22.9 KB per 1080p frame and raised median lifecycle
+  throughput from 129.5 to 135.2 FPS in the three-run comparison.
+- A concurrent surfaceless Panfrost consumer proved the missing half of that
+  contract. Without a consumer wait, 41/48 samples completed before their
+  writer fence and captured stale pixels. With `PAN_MALI_DMABUF_SYNC_WAIT=1`,
+  0/48 completed early and 0/48 differed from the finalized decoded surface;
+  a five-run follow-up produced 80/80 correct samples.
 - Stock Firefox's unmodified `glxtest` reported `/dev/mali0`, its unmodified
   `vaapitest` reported H.264 hardware support, and an RDD video decode produced
   a MediaCodec NV12 frame through the VA driver. RDD imported its R8 and GR88

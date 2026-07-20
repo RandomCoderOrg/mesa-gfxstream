@@ -76,6 +76,16 @@ if [ "${TENSOR_VAAPI:-0}" = 1 ]; then
    # Firefox exports that VA surface immediately.  Let Firefox import the
    # preallocated DMA-BUF and fill it later when the matching PTS is returned.
    export TENSOR_VA_DEFERRED_EXPORT="${TENSOR_VA_DEFERRED_EXPORT:-1}"
+   # When the native service uses Kbase release fences, allocate matching VA
+   # surfaces from the uncached heap. A cached DMA_BUF_IOCTL_SYNC_START would
+   # wait on the producer's own pending write fence.
+   if [ "${TENSOR_VA_RELEASE_FENCE:-0}" = 1 ]; then
+      export TENSOR_VA_DMA_HEAP="${TENSOR_VA_DMA_HEAP:-system-uncached}"
+      # Rootless Kbase has no DRM render node through which Mesa can import
+      # implicit DMA-BUF fences. Make Panfrost wait on the imported writer
+      # fence before submitting a JM batch that samples the decoded planes.
+      export PAN_MALI_DMABUF_SYNC_WAIT="${PAN_MALI_DMABUF_SYNC_WAIT:-1}"
+   fi
 else
    export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-0}"
 fi

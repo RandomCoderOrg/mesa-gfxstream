@@ -26,6 +26,9 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <poll.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "drm-uapi/panfrost_drm.h"
@@ -124,6 +127,59 @@ panfrost_batch_uses_resource(struct panfrost_batch *batch,
         return _mesa_set_search(batch->resources, rsrc) != NULL;
 }
 
+/*
+ * Android's rootless Kbase path has no renderonly DRM device, so the normal
+ * dma-buf fence capability probe and scanout bookkeeping are unavailable.
+ * Imported BOs still retain their dma-buf fd, however.  Keep this deliberately
+ * opt-in until the JM backend can express the wait as a Kbase soft-fence atom.
+ */
+static bool
+panfrost_rootless_dmabuf_sync_wait_enabled(void)
+{
+        const char *value = getenv("PAN_MALI_DMABUF_SYNC_WAIT");
+        return value && value[0] && strcmp(value, "0") != 0;
+}
+
+static void
+panfrost_batch_add_dmabuf(struct panfrost_batch *batch, int fd)
+{
+        util_dynarray_foreach(&batch->dmabufs, int, existing) {
+                if (*existing == fd)
+                        return;
+        }
+
+        util_dynarray_append(&batch->dmabufs, int, fd);
+}
+
+static int
+panfrost_batch_wait_rootless_dmabufs(struct panfrost_batch *batch)
+{
+        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
+
+        if (!dev->kbase || dev->arch >= 10 ||
+            !panfrost_rootless_dmabuf_sync_wait_enabled())
+                return 0;
+
+        util_dynarray_foreach(&batch->dmabufs, int, fd) {
+                struct pollfd item = {
+                        .fd = *fd,
+                        .events = POLLIN,
+                };
+                int result;
+
+                do {
+                        result = poll(&item, 1, -1);
+                } while (result < 0 && errno == EINTR);
+
+                if (result < 0)
+                        return -errno;
+                if (!(item.revents & POLLIN))
+                        return -EIO;
+        }
+
+        return 0;
+}
+
 static void
 panfrost_batch_add_resource(struct panfrost_batch *batch,
                             struct panfrost_resource *rsrc)
@@ -147,7 +203,7 @@ panfrost_batch_add_resource(struct panfrost_batch *batch,
         if (rsrc->scanout) {
                 if (dev->has_dmabuf_fence) {
                         int fd = rsrc->image.data.bo->dmabuf_fd;
-                        util_dynarray_append(&batch->dmabufs, int, fd);
+                        panfrost_batch_add_dmabuf(batch, fd);
                 } else {
                         perf_debug_ctx(ctx, "Forcing sync on batch");
                         batch->needs_sync = true;
@@ -331,11 +387,19 @@ panfrost_batch_update_access(struct panfrost_batch *batch,
                              struct panfrost_resource *rsrc, bool writes)
 {
         struct panfrost_context *ctx = batch->ctx;
+        struct panfrost_device *dev = pan_device(ctx->base.screen);
         uint32_t batch_idx = panfrost_batch_idx(batch);
         struct hash_entry *entry = _mesa_hash_table_search(ctx->writers, rsrc);
         struct panfrost_batch *writer = entry ? entry->data : NULL;
 
         panfrost_batch_add_resource(batch, rsrc);
+
+        /* The release fence is a writer fence. POLLIN is therefore the
+         * correct wait only for imported resources this batch reads. */
+        if (!writes && dev->kbase && rsrc->image.data.bo->dmabuf_fd != -1 &&
+            panfrost_rootless_dmabuf_sync_wait_enabled())
+                panfrost_batch_add_dmabuf(batch,
+                                          rsrc->image.data.bo->dmabuf_fd);
 
         /* Flush users if required */
         if (writes || ((writer != NULL) && (writer != batch))) {
@@ -1281,10 +1345,14 @@ panfrost_batch_submit(struct panfrost_context *ctx,
                 screen->vtbl.emit_fbd(batch, &fb);
 
         /* TODO: Don't hardcode the arch number */
-        if (dev->arch < 10)
-                ret = panfrost_batch_submit_jobs(batch, &fb, 0, ctx->syncobj);
-        else
+        if (dev->arch < 10) {
+                ret = panfrost_batch_wait_rootless_dmabufs(batch);
+                if (!ret)
+                        ret = panfrost_batch_submit_jobs(batch, &fb, 0,
+                                                         ctx->syncobj);
+        } else {
                 ret = panfrost_batch_submit_csf(batch, &fb);
+        }
 
         if (ret)
                 fprintf(stderr, "panfrost_batch_submit failed: %d\n", ret);

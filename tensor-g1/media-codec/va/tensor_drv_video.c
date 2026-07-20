@@ -112,6 +112,10 @@ struct tensor_va_driver {
    struct tensor_va_image images[TENSOR_MAX_IMAGES];
 };
 
+static bool tensor_process_until(struct tensor_va_driver *driver,
+                                 struct tensor_va_context *context,
+                                 uint16_t terminal);
+
 static struct tensor_va_config *
 tensor_config(struct tensor_va_driver *driver, VAConfigID id)
 {
@@ -163,6 +167,13 @@ tensor_deferred_export_enabled(void)
 {
    const char *value = getenv("TENSOR_VA_DEFERRED_EXPORT");
    return value && *value && strcmp(value, "0") != 0;
+}
+
+static bool
+tensor_remap_latest_enabled(void)
+{
+   const char *value = getenv("TENSOR_VA_REMAP_LATEST");
+   return value && value[0] && strcmp(value, "0") != 0;
 }
 
 static uint64_t
@@ -333,6 +344,24 @@ tensor_send_message(int fd, uint16_t type, int64_t pts_us, uint32_t arg0,
    return tensor_transfer(fd, &message, sizeof(message), true) &&
           (!payload_size ||
            tensor_transfer(fd, (void *)payload, payload_size, true));
+}
+
+static void
+tensor_close_service(struct tensor_va_driver *driver,
+                     struct tensor_va_context *context)
+{
+   if (context->socket_fd < 0)
+      return;
+   if (context->submitted_frames) {
+      int64_t pts_us = ((int64_t)context->submitted_frames + 1) * 1000;
+      if (tensor_send_message(context->socket_fd, TMC_INPUT_EOS, pts_us,
+                              0, 0, 0, NULL, 0))
+         tensor_process_until(driver, context, TMC_OUTPUT_EOS);
+   } else {
+      tensor_send_message(context->socket_fd, TMC_CLOSE, 0, 0, 0, 0, NULL, 0);
+   }
+   close(context->socket_fd);
+   context->socket_fd = -1;
 }
 
 static bool
@@ -855,7 +884,7 @@ tensor_terminate(VADriverContextP ctx)
       for (unsigned i = 0; i < TENSOR_MAX_CONTEXTS; i++) {
          if (driver->contexts[i].socket_fd >= 0 &&
              driver->contexts[i].used)
-            close(driver->contexts[i].socket_fd);
+            tensor_close_service(driver, &driver->contexts[i]);
          free(driver->contexts[i].slice_data);
       }
       for (unsigned i = 0; i < TENSOR_MAX_SURFACES; i++) {
@@ -1042,7 +1071,8 @@ tensor_destroy_surfaces(VADriverContextP ctx, VASurfaceID *surfaces,
          return VA_STATUS_ERROR_INVALID_SURFACE;
       if (tensor_deferred_export_enabled() &&
           surface->exported_before_ready &&
-          surface->status != VASurfaceReady) {
+          surface->status != VASurfaceReady &&
+          !tensor_remap_latest_enabled()) {
          surface->destroy_pending = true;
          if (tensor_debug_enabled())
             fprintf(stderr,
@@ -1096,8 +1126,7 @@ tensor_destroy_context(VADriverContextP ctx, VAContextID context_id)
    struct tensor_va_context *context = tensor_context(driver, context_id);
    if (!context)
       return VA_STATUS_ERROR_INVALID_CONTEXT;
-   if (context->socket_fd >= 0)
-      close(context->socket_fd);
+   tensor_close_service(driver, context);
    free(context->slice_data);
    memset(context, 0, sizeof(*context));
    return VA_STATUS_SUCCESS;
