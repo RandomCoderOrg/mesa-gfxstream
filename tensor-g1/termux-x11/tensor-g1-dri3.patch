@@ -1,0 +1,346 @@
+diff --git a/app/src/main/cpp/lorie/InitOutput.c b/app/src/main/cpp/lorie/InitOutput.c
+index 8d22666..1068d10 100644
+--- a/app/src/main/cpp/lorie/InitOutput.c
++++ b/app/src/main/cpp/lorie/InitOutput.c
+@@ -124,8 +124,16 @@ static LorieBuffer *lorieEnsureGpuSampleable(PixmapPtr pixmap, int8_t type) {
+         LorieBuffer_convert(priv->buffer, type, AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM);
+         if (desc->type != LORIEBUFFER_REGULAR) {
+             // LorieBuffer_convert does not report status but it does not let the type change in the case of error.
++            // Conversion frees the regular buffer that priv->locked used to
++            // reference.  Do not leave EXA with that dangling CPU pointer:
++            // the next PrepareAccess must lock the new backing allocation so
++            // DMA-BUF CPU cache synchronization brackets every X write.
++            priv->locked = NULL;
++            priv->wasLocked = false;
++            pixmap->devPrivate.ptr = NULL;
+             pScreenPtr->ModifyPixmapHeader(pixmap, 0, 0, 0, 0, desc->stride * 4, NULL);
+-            LorieBuffer_lock(priv->buffer, &priv->locked);
++            if (type == LORIEBUFFER_AHARDWAREBUFFER)
++                LorieBuffer_lock(priv->buffer, &priv->locked);
+         }
+     }
+ 
+@@ -1138,11 +1146,18 @@ static PixmapPtr loriePixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *
+             && desc.format != AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM
+             && desc.format != AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM,
+             "DRI3: AHARDWAREBUFFER_SOCKET_FD: wrong format of AHardwareBuffer. Must be one of: AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM, AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM, AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM (stands for 5).");
++        check(desc.width < width || desc.height < height,
++              "DRI3: AHARDWAREBUFFER_SOCKET_FD: AHardwareBuffer %ux%u is smaller than the requested pixmap %ux%u",
++              desc.width, desc.height, width, height);
+         check(!(priv->buffer = LorieBuffer_wrapAHardwareBuffer(buffer)), "DRI3: LorieBuffer_wrapAHardwareBuffer failed.");
+ 
+-        screen->ModifyPixmapHeader(pixmap, desc.width, desc.height, 0, 0, desc.stride * 4, NULL);
++        /* The backing AHardwareBuffer may include hidden allocation padding.
++         * Keep its physical dimensions in LorieBuffer for correct EGLImage UV
++         * sampling, but expose only the logical DRI3 pixmap dimensions to X. */
++        screen->ModifyPixmapHeader(pixmap, width, height, 0, 0, desc.stride * 4, NULL);
+         if (lorieServerDebugEnabled)
+-            log(INFO, "DRI3: imported AHardwareBuffer, modifier %llu, %ux%u stride %u", (unsigned long long) modifier, desc.width, desc.height, desc.stride);
++            log(INFO, "DRI3: imported AHardwareBuffer, modifier %llu, logical %ux%u physical %ux%u stride %u",
++                (unsigned long long) modifier, width, height, desc.width, desc.height, desc.stride);
+     }
+ 
+     return pixmap;
+@@ -1154,6 +1169,58 @@ static PixmapPtr loriePixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *
+     return NULL;
+ }
+ 
++static int lorieDri3Open(__unused ClientPtr client, __unused ScreenPtr screen,
++                         __unused RRProviderPtr provider, int *fd) {
++    int mali = open("/dev/mali0", O_RDWR | O_CLOEXEC | O_NONBLOCK);
++    if (mali < 0)
++        return BadAlloc;
++
++    *fd = mali;
++    return Success;
++}
++
++static int lorieFdsFromPixmap(__unused ScreenPtr screen, PixmapPtr pixmap,
++                              int *fds, uint32_t *strides,
++                              uint32_t *offsets, uint64_t *modifier) {
++    LorieBuffer *buffer = lorieEnsureGpuSampleable(pixmap, LORIEBUFFER_FD);
++    uint32_t size;
++    if (!buffer)
++        return 0;
++    const LorieBuffer_Desc *desc = LorieBuffer_description(buffer);
++
++    fds[0] = LorieBuffer_exportFileDescriptor(buffer, &offsets[0], &size);
++    if (fds[0] < 0)
++        return 0;
++
++    strides[0] = desc->stride * 4;
++    *modifier = DRM_FORMAT_MOD_LINEAR;
++    return 1;
++}
++
++static int lorieFdFromPixmap(__unused ScreenPtr screen, PixmapPtr pixmap,
++                             CARD16 *stride, CARD32 *size) {
++    LorieBuffer *buffer = lorieEnsureGpuSampleable(pixmap, LORIEBUFFER_FD);
++    uint32_t offset;
++    int fd;
++    if (!buffer)
++        return -1;
++
++    const LorieBuffer_Desc *desc = LorieBuffer_description(buffer);
++    if ((uint32_t) desc->stride * 4 > UINT16_MAX)
++        return -1;
++
++    fd = LorieBuffer_exportFileDescriptor(buffer, &offset, size);
++    if (fd < 0)
++        return -1;
++    if (offset != 0) {
++        close(fd);
++        return -1;
++    }
++
++    *stride = (CARD16) desc->stride * 4;
++    return fd;
++}
++
+ static int lorieGetFormats(__unused ScreenPtr screen, CARD32 *num_formats, CARD32 **formats) {
+     static CARD32 format = DRM_FORMAT_ARGB8888;
+     *num_formats = 1;
+@@ -1177,7 +1244,9 @@ static int lorieGetModifiers(__unused ScreenPtr screen, uint32_t format, uint32_
+ 
+ static dri3_screen_info_rec lorieDri3Info = {
+         .version = 2,
+-        .fds_from_pixmap = FalseNoop,
++        .fd_from_pixmap = lorieFdFromPixmap,
++        .open_client = lorieDri3Open,
++        .fds_from_pixmap = lorieFdsFromPixmap,
+         .pixmap_from_fds = loriePixmapFromFds,
+         .get_formats = lorieGetFormats,
+         .get_modifiers = lorieGetModifiers,
+diff --git a/app/src/main/cpp/lorie/buffer.c b/app/src/main/cpp/lorie/buffer.c
+index 9e2eabd..91ca273 100644
+--- a/app/src/main/cpp/lorie/buffer.c
++++ b/app/src/main/cpp/lorie/buffer.c
+@@ -11,9 +11,13 @@
+ #include <pixman.h>
+ #include <stdbool.h>
+ #include <linux/memfd.h>
++#include <linux/dma-heap.h>
++#include <linux/dma-buf.h>
++#include <sys/ioctl.h>
+ #include <sys/mman.h>
+ #include <sys/socket.h>
+ #include <errno.h>
++#include <time.h>
+ #include <EGL/egl.h>
+ #include <EGL/eglext.h>
+ #include <GLES2/gl2.h>
+@@ -66,6 +70,37 @@ static inline size_t alignToPage(size_t size) {
+     return (size + page_size - 1) & ~(page_size - 1);
+ }
+ 
++static int createDmaHeapRegion(size_t size) {
++    struct dma_heap_allocation_data allocation = {
++        .len = alignToPage(size),
++        .fd_flags = O_RDWR | O_CLOEXEC,
++        .heap_flags = 0,
++    };
++    int heap = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC);
++    if (heap < 0)
++        return -1;
++
++    int ret = ioctl(heap, DMA_HEAP_IOCTL_ALLOC, &allocation);
++    int saved_errno = errno;
++    close(heap);
++    errno = saved_errno;
++    return ret == 0 ? (int) allocation.fd : -1;
++}
++
++static int syncDmaBuf(int fd, uint64_t flags) {
++    struct dma_buf_sync sync = { .flags = flags };
++    int ret;
++
++    do {
++        ret = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
++    } while (ret < 0 && errno == EINTR);
++
++    /* LORIEBUFFER_FD can fall back to ashmem on devices without DMA heaps. */
++    if (ret < 0 && errno == ENOTTY)
++        return 0;
++    return ret;
++}
++
+ #pragma clang diagnostic push
+ #pragma ide diagnostic ignored "UnreachableCallsOfFunction"
+ int LorieBuffer_createRegion(char const* name, size_t size) {
+@@ -172,7 +207,9 @@ __LIBC_HIDDEN__ LorieBuffer* LorieBuffer_allocate(int32_t width, int32_t height,
+ 
+     if (type == LORIEBUFFER_FD) {
+         size = alignToPage(width * height * sizeof(uint32_t));
+-        fd = LorieBuffer_createRegion("LorieBuffer", size);
++        fd = createDmaHeapRegion(size);
++        if (fd < 0)
++            fd = LorieBuffer_createRegion("LorieBuffer", size);
+         if (fd < 0)
+             return NULL;
+     } else if (type == LORIEBUFFER_AHARDWAREBUFFER) {
+@@ -203,7 +240,9 @@ __LIBC_HIDDEN__ void LorieBuffer_convert(LorieBuffer* buffer, int8_t type, int8_
+ 
+     if (type == LORIEBUFFER_FD) {
+         size_t size = alignToPage(buffer->desc.stride * buffer->desc.height * sizeof(uint32_t));
+-        int fd = LorieBuffer_createRegion("LorieBuffer", size);
++        int fd = createDmaHeapRegion(size);
++        if (fd < 0)
++            fd = LorieBuffer_createRegion("LorieBuffer", size);
+         if (fd < 0)
+             return;
+ 
+@@ -213,7 +252,17 @@ __LIBC_HIDDEN__ void LorieBuffer_convert(LorieBuffer* buffer, int8_t type, int8_
+             return;
+         }
+ 
++        if (syncDmaBuf(fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE) < 0) {
++            munmap(data, size);
++            close(fd);
++            return;
++        }
+         pixman_blt(buffer->desc.data, data, buffer->desc.stride, buffer->desc.stride, 32, 32, 0, 0, 0, 0, buffer->desc.width, buffer->desc.height);
++        if (syncDmaBuf(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) < 0) {
++            munmap(data, size);
++            close(fd);
++            return;
++        }
+ 
+         buffer->desc.type = type;
+         buffer->desc.format = format;
+@@ -268,6 +317,29 @@ __LIBC_HIDDEN__ void __LorieBuffer_free(LorieBuffer* buffer) {
+             free(buffer->desc.data);
+             break;
+         case LORIEBUFFER_FD:
++            {
++                const bool log_sync =
++                    getenv("TERMUX_X11_LOG_FD_RELEASE_SYNC") != NULL;
++                struct timespec started = {0}, finished = {0};
++                if (log_sync)
++                    clock_gettime(CLOCK_MONOTONIC, &started);
++                int start_ret = syncDmaBuf(
++                    buffer->fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ |
++                                DMA_BUF_SYNC_WRITE);
++                int end_ret = syncDmaBuf(
++                    buffer->fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ |
++                                DMA_BUF_SYNC_WRITE);
++                if (log_sync) {
++                    clock_gettime(CLOCK_MONOTONIC, &finished);
++                    uint64_t elapsed_ns =
++                        (uint64_t)(finished.tv_sec - started.tv_sec) *
++                            1000000000ull +
++                        (uint64_t)(finished.tv_nsec - started.tv_nsec);
++                    dprintf(2, "DMA-BUF release sync fd=%d elapsed_ns=%llu ret=%d/%d\n",
++                            buffer->fd, (unsigned long long)elapsed_ns,
++                            start_ret, end_ret);
++                }
++            }
+             munmap(buffer->desc.data, buffer->size);
+             close(buffer->fd);
+             break;
+@@ -285,6 +357,22 @@ __LIBC_HIDDEN__ const LorieBuffer_Desc* LorieBuffer_description(LorieBuffer* buf
+     return buffer ? &buffer->desc : &none;
+ }
+ 
++__LIBC_HIDDEN__ int LorieBuffer_exportFileDescriptor(LorieBuffer* buffer,
++                                                      uint32_t* offset,
++                                                      uint32_t* size) {
++    if (!buffer || !offset || !size || buffer->desc.type != LORIEBUFFER_FD ||
++        buffer->fd < 0 || buffer->offset < 0 || buffer->offset > UINT32_MAX ||
++        buffer->size > UINT32_MAX)
++        return -1;
++
++    int fd = fcntl(buffer->fd, F_DUPFD_CLOEXEC, 0);
++    if (fd >= 0) {
++        *offset = (uint32_t) buffer->offset;
++        *size = (uint32_t) buffer->size;
++    }
++    return fd;
++}
++
+ __LIBC_HIDDEN__ int LorieBuffer_lock(LorieBuffer* buffer, void** out) {
+     int ret = 0;
+     if (!buffer)
+@@ -297,7 +385,12 @@ __LIBC_HIDDEN__ int LorieBuffer_lock(LorieBuffer* buffer, void** out) {
+         return EEXIST;
+     }
+ 
+-    if (buffer->desc.type == LORIEBUFFER_REGULAR || buffer->desc.type == LORIEBUFFER_FD)
++    if (buffer->desc.type == LORIEBUFFER_FD) {
++        if (syncDmaBuf(buffer->fd, DMA_BUF_SYNC_START |
++                                  DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE) < 0)
++            return errno;
++        buffer->lockedData = buffer->desc.data;
++    } else if (buffer->desc.type == LORIEBUFFER_REGULAR)
+         buffer->lockedData = buffer->desc.data;
+     else if (buffer->desc.type == LORIEBUFFER_AHARDWAREBUFFER)
+         ret = AHardwareBuffer_lock(buffer->desc.buffer, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, &buffer->lockedData);
+@@ -322,6 +415,10 @@ __LIBC_HIDDEN__ int LorieBuffer_unlock(LorieBuffer* buffer) {
+ 
+     if (buffer->desc.type == LORIEBUFFER_AHARDWAREBUFFER)
+         ret = AHardwareBuffer_unlock(buffer->desc.buffer, NULL);
++    else if (buffer->desc.type == LORIEBUFFER_FD &&
++             syncDmaBuf(buffer->fd, DMA_BUF_SYNC_END |
++                                    DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE) < 0)
++        ret = errno;
+ 
+     buffer->lockedData = NULL;
+     buffer->locked = false;
+@@ -421,8 +518,11 @@ __LIBC_HIDDEN__ void LorieBuffer_bindTexture(LorieBuffer *buffer) {
+         return;
+ 
+     glBindTexture(GL_TEXTURE_2D, buffer->id);
+-    if (buffer->desc.type == LORIEBUFFER_FD)
++    if (buffer->desc.type == LORIEBUFFER_FD) {
++        syncDmaBuf(buffer->fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
+         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, buffer->desc.stride, buffer->desc.height, buffer->desc.format == AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE, buffer->desc.data);
++        syncDmaBuf(buffer->fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
++    }
+ }
+ 
+ __LIBC_HIDDEN__ unsigned int LorieBuffer_getGLTextureId(LorieBuffer *buffer) {
+diff --git a/app/src/main/cpp/lorie/buffer.h b/app/src/main/cpp/lorie/buffer.h
+index 751004b..69dd82a 100644
+--- a/app/src/main/cpp/lorie/buffer.h
++++ b/app/src/main/cpp/lorie/buffer.h
+@@ -112,6 +112,17 @@ STATIC_INLINE void LorieBuffer_release(LorieBuffer* _Nullable buffer) {
+  */
+ const LorieBuffer_Desc* _Nonnull LorieBuffer_description(LorieBuffer* _Nullable buffer);
+ 
++/**
++ * Duplicate the backing fd of an FD buffer for DRI3 export.
++ *
++ * @param buffer buffer to export
++ * @param offset receives the byte offset in the exported fd
++ * @return a close-on-exec fd, or -1 when the buffer is not FD-backed
++ */
++int LorieBuffer_exportFileDescriptor(LorieBuffer* _Nullable buffer,
++                                     uint32_t* _Nonnull offset,
++                                     uint32_t* _Nonnull size);
++
+ /**
+  * Lock the AHardwareBuffer for direct CPU access.
+  * See AHardwareBuffer_lock() description for details
+diff --git a/app/src/main/cpp/recipes/xkbcomp.cmake b/app/src/main/cpp/recipes/xkbcomp.cmake
+index a7a2a33..3ef5bac 100644
+--- a/app/src/main/cpp/recipes/xkbcomp.cmake
++++ b/app/src/main/cpp/recipes/xkbcomp.cmake
+@@ -58,14 +58,17 @@ target_include_directories(xkbcomp
+         PRIVATE
+         "xkbcomp"
+         "libx11/include"
+-        "libx11/include/X11"
+         "libx11/src"
+         "libx11/src/xlibi18n"
+         "libxkbfile/include/X11/extensions"
+         "${CMAKE_CURRENT_BINARY_DIR}")
+ target_link_libraries(xkbcomp PRIVATE xorgproto)
+ target_link_options(xkbcomp PRIVATE "-fPIE" "-fPIC")
+-target_compile_options(xkbcomp PRIVATE ${common_compile_options} "-fvisibility=hidden" "-DHAVE_STRCASECMP" "-DHAVE_STRDUP" "-DDFLT_XKB_CONFIG_ROOT=\"/\"" "-DHAVE_SYS_IOCTL_H" "-fPIE" "-fPIC" "-DPACKAGE_VERSION=\"2.70\"" "-Wno-shadow")
++target_compile_options(xkbcomp PRIVATE ${common_compile_options}
++        "-iquote${CMAKE_CURRENT_SOURCE_DIR}/libx11/include/X11"
++        "-fvisibility=hidden" "-DHAVE_STRCASECMP" "-DHAVE_STRDUP"
++        "-DDFLT_XKB_CONFIG_ROOT=\"/\"" "-DHAVE_SYS_IOCTL_H" "-fPIE"
++        "-fPIC" "-DPACKAGE_VERSION=\"2.70\"" "-Wno-shadow")
+ target_apply_patch(xkbcomp "${CMAKE_CURRENT_SOURCE_DIR}/xkbcomp" "${CMAKE_CURRENT_SOURCE_DIR}/patches/xkbcomp.patch")
+ target_apply_patch(xkbfile "${CMAKE_CURRENT_SOURCE_DIR}/libxkbfile" "${CMAKE_CURRENT_SOURCE_DIR}/patches/xkbfile.patch")
+ target_apply_patch(X11 "${CMAKE_CURRENT_SOURCE_DIR}/libx11" "${CMAKE_CURRENT_SOURCE_DIR}/patches/x11.patch")

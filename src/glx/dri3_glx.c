@@ -700,6 +700,7 @@ dri3_release_tex_image(__GLXDRIdrawable *base, int buffer)
          psc->texBuffer->releaseTexBuffer(gc->driContext,
                                               pdraw->base.textureTarget,
                                               pdraw->loader_drawable.dri_drawable);
+
    }
 }
 

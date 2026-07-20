@@ -70,7 +70,6 @@ if [ "${TENSOR_VAAPI:-0}" = 1 ]; then
    # Firefox imports VA-API's R8 and GR88 planes as EGLImages. Kbase can
    # import their DMA-heap file descriptors even though /dev/mali0 is not a
    # DRM device and cannot advertise PRIME capabilities through drmGetCap().
-   export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-1}"
    export MOZ_DISABLE_RDD_SANDBOX="${MOZ_DISABLE_RDD_SANDBOX:-1}"
    # Exynos holds the first H.264 output until later access units arrive, while
    # Firefox exports that VA surface immediately.  Let Firefox import the
@@ -86,8 +85,6 @@ if [ "${TENSOR_VAAPI:-0}" = 1 ]; then
       # fence before submitting a JM batch that samples the decoded planes.
       export PAN_MALI_DMABUF_SYNC_WAIT="${PAN_MALI_DMABUF_SYNC_WAIT:-1}"
    fi
-else
-   export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-0}"
 fi
 
 exec "$panfork_x11" "$firefox" --no-remote --profile "$profile" "$@"

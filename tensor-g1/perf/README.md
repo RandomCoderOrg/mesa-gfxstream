@@ -55,6 +55,106 @@ fence switch as the dominant cause. The next structural experiment is direct
 MediaCodec surface/AHardwareBuffer output, eliminating the remaining per-frame
 NV12 CPU copy. Thermal state must be captured with every future desktop run.
 
+### Plasma window motion
+
+![Plasma window motion delivered through Termux:X11](results/plasma-motion-20260720/window-motion-fps.svg)
+
+The fixed X11 motion probe separates desktop presentation from application
+work. SurfaceFlinger observed only 12.84 displayed FPS with KWin's OpenGL 2
+compositor over the stable CPU presenter. Disabling KWin compositing raised the
+median to 61.47 FPS and reduced combined KWin, Plasma, and Termux:X11 CPU use
+from 0.774 to 0.610 cores, even though the phone was at thermal status 2 rather
+than the baseline's status 1. Application OpenGL remained direct, accelerated,
+and reported `Mali-G78 (Panfrost)`.
+
+The CPU `batchsync` experiment was not a useful breakthrough (14.15 FPS median,
+0.801 cores). Both DMA-BUF/DRI3 KWin candidates failed with `SIGBUS`; therefore
+the next compositor task is imported display-target correctness, not more sync
+tuning. Until then, `KWIN_COMPOSE=N` is the responsive Plasma default and
+`KWIN_COMPOSE=O2` is an explicit diagnostic mode. The full five-run artifacts
+and generated report are in
+[`results/plasma-motion-20260720/`](results/plasma-motion-20260720/).
+
+Build the deterministic checkerboard window in the PRoot and analyze a result
+directory on the development machine:
+
+```sh
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+  tensor-g1/perf/x11-window-motion.c -lX11 -lm -o /tmp/x11-window-motion
+/tmp/x11-window-motion 2 60
+python3 tensor-g1/perf/analyze_plasma_motion.py \
+  tensor-g1/perf/results/plasma-motion-20260720
+```
+
+The probe also records the owner of `_NET_WM_CM_S0`. A nonzero
+`compositor_owner` proves that a compositor was active during the run instead
+of merely starting and then falling back to an uncomposited desktop.
+
+For Plasma launcher and hover repaint tests, build the bounded XTest probe
+against the runtime Xtst library (the minimal image lacks its development
+symlink):
+
+```sh
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+  tensor-g1/perf/x11-menu-hover.c -lX11 -Wl,-l:libXtst.so.6 -lm \
+  -o /tmp/x11-menu-hover
+/tmp/x11-menu-hover 5 60
+```
+
+It opens the application launcher, performs a deterministic pointer sweep, and
+does not activate an application. Pair it with the process sampler and
+SurfaceFlinger TimeStats rather than judging the injected input rate itself.
+
+### Imported ARGB stride fault
+
+![Aligned and unaligned ARGB import results](results/argb-stride-20260720/argb-stride.svg)
+
+The full Plasma failure is now reproducible without Plasma Shell. KWin safely
+composited a 2240-pixel-wide ARGB window whose 8960-byte row stride is divisible
+by 64. Increasing only the width to 2248 pixels produced an 8992-byte stride
+and immediately reproduced fragment-job event `0x5b`. Both allocations were
+large enough for their declared layouts, so this is not an allocation
+shortfall or invalid destination.
+
+The same rule explains the desktop failure: Plasma's 2264-pixel-wide ARGB
+source uses a tightly packed 9056-byte stride, also 32 bytes past a 64-byte
+boundary. KWin's destination uses an aligned 9088-byte stride and remains
+valid. Historical Mesa commit `811f8a19469722bea32f3c539b8cf0939fe3b057`
+documents this v7+ hardware requirement and the resulting imprecise fault;
+commit `4b19725ee525f6f0b5785436680cea63a21445a1` reverted broad rejection because
+it broke consumers that supplied such buffers.
+
+Build the minimal reproducer and compare aligned and unaligned widths:
+
+```sh
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+  tensor-g1/perf/x11-argb-surface.c -lX11 -o /tmp/x11-argb-surface
+/tmp/x11-argb-surface 2240 256 1500
+/tmp/x11-argb-surface 2248 256 1500
+```
+
+Set `PAN_MALI_IMPORT_DEBUG=1` on the compositor to record imported dimensions,
+format, row stride, allocation size, computed layout size, and GPU address.
+The raw minimal evidence and comparison are in
+[`results/argb-stride-20260720/`](results/argb-stride-20260720/).
+
+The safe next experiment is an aligned staging resource for incompatible X
+pixmaps. Merely rounding the descriptor stride would make it disagree with the
+tightly packed source and is not valid. A selective staging path keeps aligned
+video and ordinary application buffers on the direct route instead of forcing
+the whole desktop back through CPU presentation.
+
+### Termux:X11 lifecycle fixes
+
+The companion X-server patch is preserved under
+[`../termux-x11/`](../termux-x11/). Clearing stale CPU pointers after pixmap
+conversion fixed repeated texture-from-pixmap updates. Synchronizing an FD
+buffer before its final unmap and close fixed the separate composited-window
+destroy fault: ten rapid lifecycle runs and twelve repeated update runs passed.
+The release synchronization generally cost about 0.19--0.31 ms. These fixes
+make the lifecycle tests reliable; they do not relax the imported-texture
+stride requirement above.
+
 `firefox-loop-player.html` now separates `displayed_fps`, derived from
 `VideoPlaybackQuality`, from `presented_fps`, the main-thread
 `requestVideoFrameCallback` callback rate. It also records callback frame span

@@ -2,7 +2,6 @@
 #include "target-helpers/sw_helper.h"
 
 #include "dri_screen.h"
-
 #include <stdlib.h>
 #include <string.h>
 
@@ -85,16 +84,21 @@ DEFINE_LOADER_DRM_ENTRYPOINT(vc4)
 
 #if defined(GALLIUM_PANFROST)
 const __DRIextension **__driDriverGetExtensions_panfrost(void);
+const __DRIextension **__driDriverGetExtensions_panfrost_kbase(void);
 
 PUBLIC const __DRIextension **
 __driDriverGetExtensions_panfrost(void)
 {
-   const char *x11_swrast = getenv("PAN_MALI_X11_SWRAST");
-
-   if (x11_swrast && strcmp(x11_swrast, "0"))
-      return galliumsw_driver_extensions;
-
    return galliumdrm_driver_extensions;
+}
+
+/* Kbase is a hardware winsys, but X11 without a DRM render-node fd enters
+ * through the swrast loader ABI. Give that platform ABI its own internal
+ * driver name so the standard panfrost entrypoint remains usable by GBM. */
+PUBLIC const __DRIextension **
+__driDriverGetExtensions_panfrost_kbase(void)
+{
+   return galliumsw_driver_extensions;
 }
 #endif
 

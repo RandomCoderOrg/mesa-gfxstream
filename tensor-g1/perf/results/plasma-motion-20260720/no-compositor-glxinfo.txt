@@ -1,0 +1,24 @@
+[100m> LOGIN jammy:raw[0m
+name of display: :0
+display: :0  screen: 0
+direct rendering: Yes
+Extended renderer info (GLX_MESA_query_renderer):
+    Vendor: Panfrost (0xffffffff)
+    Device: Mali-G78 (Panfrost) (0xffffffff)
+    Version: 23.0.0
+    Accelerated: yes
+    Video memory: 5589MB
+    Unified memory: yes
+    Preferred profile: compat (0x2)
+    Max core profile version: 0.0
+    Max compat profile version: 3.0
+    Max GLES1 profile version: 1.1
+    Max GLES[23] profile version: 3.1
+OpenGL vendor string: Panfrost
+OpenGL renderer string: Mali-G78 (Panfrost)
+OpenGL version string: 3.0 Mesa 23.0.0-devel (git-120202c675)
+OpenGL shading language version string: 1.30
+OpenGL context flags: (none)
+
+OpenGL ES profile version string: OpenGL ES 3.1 Mesa 23.0.0-devel (git-120202c675)
+OpenGL ES profile shading language version string: OpenGL ES GLSL ES 3.10

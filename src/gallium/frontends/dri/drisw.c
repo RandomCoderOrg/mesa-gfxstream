@@ -37,6 +37,7 @@
 #include <unistd.h>
 #include "pipe/p_context.h"
 #include "pipe-loader/pipe_loader.h"
+#include "loader.h"
 #include "frontend/drisw_api.h"
 #include "state_tracker/st_context.h"
 
@@ -425,6 +426,9 @@ drisw_allocate_textures(struct dri_context *stctx,
 {
    struct dri_screen *screen = drawable->screen;
    const __DRIswrastLoaderExtension *loader = drawable->screen->swrast_loader;
+   const char *dmabuf_present = getenv("PAN_MALI_X11_DRI3_ACTIVE");
+   const bool dmabuf_present_active =
+      dmabuf_present && strcmp(dmabuf_present, "0");
    struct pipe_resource templ;
    unsigned width, height;
    boolean resized;
@@ -468,8 +472,13 @@ drisw_allocate_textures(struct dri_context *stctx,
 
       dri_drawable_get_format(drawable, statts[i], &format, &bind);
 
-      /* if we don't do any present, no need for display targets */
-      if (statts[i] != ST_ATTACHMENT_DEPTH_STENCIL && !screen->swrast_no_present)
+      /* A GLX pixmap used by EXT_texture_from_pixmap exposes FRONT_LEFT and
+       * must be populated from X11 through a CPU map. It is compositor input,
+       * not a swapchain image. Restrict imported DMA-heap display targets to
+       * the window back buffer that putImageDmaBuf actually presents. */
+      if (statts[i] != ST_ATTACHMENT_DEPTH_STENCIL &&
+          !screen->swrast_no_present &&
+          (!dmabuf_present_active || statts[i] == ST_ATTACHMENT_BACK_LEFT))
          bind |= PIPE_BIND_DISPLAY_TARGET;
 
       if (format == PIPE_FORMAT_NONE)
@@ -528,10 +537,16 @@ drisw_update_tex_buffer(struct dri_drawable *drawable,
 
    get_drawable_info(drawable, &x, &y, &w, &h);
 
+   transfer = NULL;
    map = pipe_texture_map(pipe, res,
-                           0, 0, // level, layer,
-                           PIPE_MAP_WRITE,
-                           x, y, w, h, &transfer);
+                          0, 0, // level, layer,
+                          PIPE_MAP_WRITE,
+                          x, y, w, h, &transfer);
+   if (!map) {
+      if (transfer)
+         pipe_texture_unmap(pipe, transfer);
+      return;
+   }
 
    /* Copy the Drawable content to the mapped texture buffer */
    if (!get_image_shm(drawable, x, y, w, h, res))
@@ -625,9 +640,7 @@ static const struct drisw_loader_funcs drisw_shm_lf = {
 static bool
 panfrost_drisw_enabled(void)
 {
-   const char *enabled = getenv("PAN_MALI_X11_SWRAST");
-
-   return enabled && strcmp(enabled, "0");
+   return loader_kbase_x11_enabled();
 }
 
 static void
@@ -664,16 +677,12 @@ panfrost_drisw_flush_frontbuffer(struct pipe_screen *pscreen,
 static struct pipe_screen *
 panfrost_drisw_create_screen(struct dri_screen *screen)
 {
-   const char *device = getenv("PAN_MALI_DEV");
    const char *dri3 = getenv("PAN_MALI_X11_DRI3");
    struct pipe_screen *pscreen;
    int fd;
 
    if (!panfrost_drisw_enabled())
       return NULL;
-
-   if (!device || !device[0])
-      device = "/dev/mali0";
 
    if (dri3 && strcmp(dri3, "0") &&
        screen->swrast_loader->base.version >= 7 &&
@@ -682,11 +691,10 @@ panfrost_drisw_create_screen(struct dri_screen *screen)
    else
       unsetenv("PAN_MALI_X11_DRI3_ACTIVE");
 
-   fd = open(device, O_RDWR | O_CLOEXEC | O_NONBLOCK);
+   fd = loader_open_kbase_device();
    if (fd < 0)
       return NULL;
 
-   setenv("MESA_LOADER_DRIVER_OVERRIDE", "panfrost", 0);
    if (!pipe_loader_drm_probe_fd(&screen->dev, fd)) {
       close(fd);
       return NULL;

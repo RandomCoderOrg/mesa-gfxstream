@@ -77,11 +77,7 @@ run_once() {
     udroid login jammy:raw env \
         TENSOR_EGL_CONSUMER=1 \
         TENSOR_VA_DMA_HEAP=system-uncached \
-        PAN_MALI_DEV=/dev/mali0 \
-        PAN_MALI_X11_SWRAST=1 \
-        PAN_MALI_DMABUF_IMPORT=1 \
         "${wait_env[@]}" \
-        MESA_LOADER_DRIVER_OVERRIDE=panfrost \
         LIBGL_DRIVERS_PATH="$driver_path" \
         LD_LIBRARY_PATH="$library_path" \
         "$client" "$socket_guest" "$input_guest" \

@@ -1,0 +1,65 @@
+{
+  "cpu-batchsync": {
+    "displayed_fps": [
+      10.873,
+      14.149,
+      14.181,
+      13.339,
+      17.005
+    ],
+    "displayed_fps_max": 17.005,
+    "displayed_fps_median": 14.149,
+    "displayed_fps_min": 10.873,
+    "process_cpu_cores_median": 0.8009759675637195,
+    "sampler_cpu_percent_median": 4.810620117890571,
+    "thermal_statuses": [
+      2,
+      2,
+      2,
+      2,
+      2
+    ]
+  },
+  "no-compositor": {
+    "displayed_fps": [
+      42.808,
+      61.471,
+      42.088,
+      62.5,
+      62.5
+    ],
+    "displayed_fps_max": 62.5,
+    "displayed_fps_median": 61.471,
+    "displayed_fps_min": 42.088,
+    "process_cpu_cores_median": 0.610057191688534,
+    "sampler_cpu_percent_median": 6.740274829975999,
+    "thermal_statuses": [
+      2,
+      2,
+      2,
+      2,
+      2
+    ]
+  },
+  "stable": {
+    "displayed_fps": [
+      12.894,
+      12.797,
+      12.844,
+      13.309,
+      12.313
+    ],
+    "displayed_fps_max": 13.309,
+    "displayed_fps_median": 12.844,
+    "displayed_fps_min": 12.313,
+    "process_cpu_cores_median": 0.7743312574107735,
+    "sampler_cpu_percent_median": 4.006715826611819,
+    "thermal_statuses": [
+      1,
+      1,
+      1,
+      1,
+      1
+    ]
+  }
+}

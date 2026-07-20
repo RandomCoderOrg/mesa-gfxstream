@@ -48,9 +48,11 @@ the captures because these are unedited `adb screencap` images from the Pixel
 
 ```mermaid
 flowchart LR
-    APP["Linux GLX or EGL application"] --> LOADER["Mesa X11 loader and patched drisw"]
+    APP["Linux application or desktop compositor"] --> API["GLX, EGL, or GBM"]
+    KBASE["Android Kbase /dev/mali0"] -->|"automatic device and fd probe"| LOADER["Mesa Kbase winsys discovery"]
+    API --> LOADER
+    LOADER -->|"panfrost_kbase platform ABI or standard panfrost GBM ABI"| PAN["Panfork / Panfrost"]
     HEAP["Android system DMA heap"] -->|"allocate linear display target"| BUF["DMA-BUF"]
-    LOADER --> PAN["Panfork / Panfrost"]
     PAN -->|"Kbase UMM import and GPU render"| BUF
     BUF -->|"export fd at swap"| QUEUE["Three-slot DRI3 Present queue"]
     QUEUE -->|"PixmapFromBuffers + Present"| X11["Termux:X11 Present"]
@@ -81,27 +83,48 @@ the complete gralloc handle through its existing private DRI3 socket modifier.
 This makes the source eligible for Android GPU blitting while keeping the route
 rootless. It remains opt-in with `PAN_MALI_X11_AHB=1`.
 
-`LIBGL_ALWAYS_SOFTWARE=1` therefore has a misleading name here. It selects the
-DRI software *presentation frontend*, which this branch then hijacks to create
-a Panfrost screen on `/dev/mali0`. `GL_RENDERER` is the source of truth and must
-report `Mali-G78 (Panfrost)`.
+### Automatic Kbase winsys discovery
+
+Applications and desktop compositors no longer need to masquerade as software
+renderers to reach Panfrost. The Mesa loader probes `/dev/mali0`, recognizes an
+open fd for that Kbase character device, and selects the hardware Panfrost
+screen automatically. GLX, X11 EGL, and surfaceless EGL use an internal
+`panfrost_kbase` DRI alias because their non-DRM platform glue needs the
+swrast-loader ABI. GBM retains the standard `panfrost` DRI entrypoint and can
+create rendering buffers directly from an opened `/dev/mali0` fd.
+
+The alias separates the platform ABI from the renderer. It does not select
+llvmpipe: `GL_RENDERER` reports `Mali-G78 (Panfrost)`, and compositor processes
+hold live `/dev/mali0` descriptors. `PAN_MALI_DEV` remains only as a device-path
+override, while `PAN_MALI_X11_SWRAST=0` is a diagnostic opt-out.
+
+The tested clean contract needs only the isolated Mesa install paths:
+
+```sh
+export DISPLAY=:0
+export LD_LIBRARY_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu
+export LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
+```
+
+With that environment, GLX, X11 EGL, surfaceless EGL, GBM, KWin, and Mutter all
+discover Panfrost without `MESA_LOADER_DRIVER_OVERRIDE`,
+`LIBGL_ALWAYS_SOFTWARE`, or a per-desktop Kbase opt-in.
 
 ### Dirty patch inventory
 
-These changes intentionally cut across Mesa layers instead of adding a clean
+These changes intentionally cut across Mesa layers to provide an experimental
 Android/Kbase winsys:
 
-- `platform_surfaceless.c` opens the device named by `PAN_MALI_DEV`, records a
-  non-DRM Kbase hardware device for EGL bookkeeping, and loads
-  `panfrost_dri.so` through this fork's swrast-loader ABI. The ABI supplies
-  CPU-addressable surfaces; the selected renderer remains Panfrost.
-- `platform_x11.c` uses the same non-DRM Kbase EGL device when its repurposed
-  software-presentation frontend is backed by Panfrost. This prevents clients
-  such as Firefox from classifying the renderer as
+- The common Mesa loader probes `/dev/mali0`, identifies fds for that Kbase
+  device, and maps them to Panfrost. `PAN_MALI_DEV` is an optional path
+  override rather than a required launch variable.
+- `platform_x11.c`, `platform_surfaceless.c`, `drisw.c`, and `drisw_glx.c`
+  automatically create a real Panfrost `pipe_screen` when Kbase is accessible.
+  EGL records a non-DRM hardware device so clients do not misclassify it as
   `EGL_MESA_device_software`.
-- `platform_x11.c`, `drisw.c`, `drisw_glx.c`, and the DRI target route the
-  swrast loader into a real Panfrost `pipe_screen` when
-  `PAN_MALI_X11_SWRAST=1`.
+- `panfrost_kbase_dri.so` exposes the swrast-loader platform ABI needed by
+  GLX/X11 EGL without changing the standard `panfrost_dri.so` DRM ABI used by
+  GBM. Both aliases resolve to the same Gallium Panfrost renderer.
 - The swrast loader ABI has a private v7 callback that exports a Gallium display
   target as a DMA-BUF and presents it with DRI3/Present. It also reports the
   assigned Present slot and released-slot mask so Gallium can maintain a small
@@ -116,11 +139,10 @@ Android/Kbase winsys:
 - DMA-heap allocation is activated only when the loader advertises the private
   callback. Both the GLX and X11 EGL swrast loaders now implement it; setting
   `PAN_MALI_X11_DRI3=0` retains the CPU presenter as a diagnostic fallback.
-- The normal DRI image extension gate assumes a DRM fd and disables DMA-BUF
-  import on `/dev/mali0`. `PAN_MALI_DMABUF_IMPORT=1` overrides that gate for
-  the standalone EGL/DRI3 verification probe.
-- Panfrost display targets are forced linear because the CPU presenter cannot
-  interpret tiled layouts.
+- The normal DRI image extension gate assumes a DRM fd. Panfrost now advertises
+  its Kbase DMA-BUF import capability directly, without a per-process opt-in.
+- Panfrost Kbase display targets are forced linear because the platform
+  presenters cannot interpret its tiled layouts.
 - The Mali-G78 product ID (`0x9202`, `TBOx`) is added locally. AFBC is disabled
   for it because this old fork's G78 AFBC path triggers Kbase
   `DATA_INVALID_FAULT` (`0x58`).
@@ -141,11 +163,10 @@ Android/Kbase winsys:
 - A few DRI damage paths gain null-resource guards required by the repurposed
   software frontend.
 
-The result is useful as a research/prototyping driver, but the environment
-variable switches, non-DRM EGL bookkeeping device, private loader ABI,
-fixed-size Present queue, device-specific quirks, and hard-coded aarch64
-install layout all need proper design work before anything could be proposed
-upstream.
+The result is useful as a research/prototyping driver, but the non-DRM EGL
+bookkeeping device, internal loader alias, private presentation ABI, fixed-size
+Present queue, device-specific quirks, and hard-coded aarch64 install layout
+all need proper design work before anything could be proposed upstream.
 
 ## Build in Jammy
 
@@ -267,10 +288,9 @@ tensor-g1/panfork/run-panfrost-x11 glmark2 -s 300x300 \
 tensor-g1/panfork/run-panfrost-x11 glmark2 --validate
 ```
 
-The X11 wrapper sets `LIBGL_ALWAYS_SOFTWARE=1` only to select Mesa's software
-presentation frontend. The patched frontend opens `/dev/mali0`, creates a
-Panfrost renderer, and uses the private DMA-BUF callback for presentation;
-`GL_RENDERER` must still report `Mali-G78 (Panfrost)`.
+The X11 wrapper no longer selects a renderer. Mesa discovers `/dev/mali0`
+itself; the wrapper chooses only the DRI3 or CPU presentation policy.
+`GL_RENDERER` must report `Mali-G78 (Panfrost)`.
 
 For the currently safer diagnostic mode, serialise GPU work:
 
@@ -291,22 +311,19 @@ atom event `0x58`. The synchronised fullscreen capture ran roughly 69--85 FPS
 without that event. The asynchronous path is therefore not yet considered
 stable.
 
-The important environment variables are:
+The base runtime environment and optional presentation controls are:
 
 ```sh
 DISPLAY=:0
-PAN_MALI_DEV=/dev/mali0
-PAN_MALI_X11_SWRAST=1
-PAN_MALI_X11_DRI3=1
-PAN_MALI_X11_AHB=0
-PAN_MALI_DMABUF_IMPORT=1
-MESA_LOADER_DRIVER_OVERRIDE=panfrost
-LIBGL_ALWAYS_SOFTWARE=1
 LD_LIBRARY_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu
 LIBGL_DRIVERS_PATH=/opt/panfork-tensor/lib/aarch64-linux-gnu/dri
+PAN_MALI_X11_DRI3=1  # 0 selects the stable CPU presenter
+PAN_MALI_X11_AHB=0   # 1 selects the experimental AHardwareBuffer route
 ```
 
-## GNOME desktop and native ARM64 Firefox
+`PAN_MALI_DEV` is only needed when the Kbase node is not `/dev/mali0`.
+
+## GNOME and KDE Plasma desktops, plus native ARM64 Firefox
 
 The `desktop/` wrappers run GNOME Shell and Mozilla's native aarch64 Firefox
 through the same isolated Panfrost install:
@@ -325,6 +342,52 @@ tensor-g1/desktop/run-epiphany-panfrost --private-instance \
   file:///tmp/video-loop.html
 ```
 
+Install and start a complete Plasma 5 X11 session with the same Panfrost build:
+
+```sh
+apt-get install -y kde-standard
+kwriteconfig5 --file kscreenlockerrc --group Daemon --key Autolock false
+kwriteconfig5 --file kscreenlockerrc --group Daemon --key LockOnResume false
+tensor-g1/desktop/start-plasma-x11
+```
+
+Disabling the Plasma screen locker is necessary in PRoot because there is no
+real login/resume session to unlock it. The Plasma wrapper supplies both D-Bus
+layers. Its practical default disables KWin compositing while applications
+continue to render on Mali-G78 through Panfrost. This avoids a second
+full-window render and CPU-present copy on every desktop update. To retain
+Plasma's shadows, transparency, and other compositor effects for diagnostics,
+start it explicitly with:
+
+```sh
+KWIN_COMPOSE=O2 tensor-g1/desktop/start-plasma-x11
+```
+
+In five controlled 120-move runs, Android SurfaceFlinger measured a 61.47 FPS
+median without KWin compositing versus 12.84 FPS with the stable synchronised
+CPU presenter, while combined KWin, Plasma, and Termux:X11 CPU use fell about
+21%. The CPU `batchsync` candidate reached only 14.15 FPS and was noisy.
+Enabling the DMA-BUF/DRI3 presenter for KWin is not yet viable: both `sync` and
+`batchsync` candidates terminate KWin with `SIGBUS` while handling an imported
+display target. See the [raw comparison and graph](perf/results/plasma-motion-20260720/comparison.md)
+and the [repeatable motion probe](perf/x11-window-motion.c).
+
+The compositor crash is now isolated to imported regular textures whose row
+stride is not a multiple of 64 bytes. A minimal 2240-pixel ARGB surface with an
+8960-byte stride passes, while changing only the width to 2248 pixels and the
+stride to 8992 bytes reproduces fragment-job event `0x5b`. Plasma's full-screen
+ARGB source has the same incompatible alignment. See the
+[stride comparison and graph](perf/results/argb-stride-20260720/comparison.md)
+and [minimal reproducer](perf/x11-argb-surface.c). The current practical Plasma
+default therefore remains uncomposited while an aligned staging path is
+developed for incompatible imports.
+
+Termux:X11 is a separate project, so its tested DMA-heap, DRI3 export, pixmap
+conversion, and buffer-release changes are stored as a
+[companion patch with build notes](termux-x11/README.md). Keeping that patch in
+this repository makes the complete Android-to-Panfrost winsys reproducible
+without pretending the X-server changes are part of Mesa.
+
 Japanese, Chinese, and Korean page text needs a CJK font inside the otherwise
 minimal Jammy container. Without one, Firefox tabs and GNOME window titles show
 square replacement glyphs. Install Noto CJK, refresh Fontconfig, and restart
@@ -339,8 +402,8 @@ fc-match :lang=ja
 ```
 
 GNOME Shell and Epiphany deliberately retain the conservative
-`PAN_MALI_X11_DRI3=0` and `PAN_MALI_DMABUF_IMPORT=0` defaults. Their final
-windows are CPU-presented while rendering stays on Mali-G78. Firefox enables
+`PAN_MALI_X11_DRI3=0` default. Their final windows are CPU-presented while
+rendering stays on Mali-G78. Firefox enables
 `PAN_MALI_X11_DRI3=1` because its hardware-video path must use X11 EGL: stock
 Firefox disables DMA-BUF and VA-API when EGL is disabled. This fork's EGL
 swrast loader now supplies the same reusable DMA-BUF/DRI3 Present queue as the
@@ -374,10 +437,10 @@ Firefox now reaches the experimental Tensor VA-API driver without a custom
 browser build. Mesa reports accessible Kbase `/dev/mali0` as the compatibility
 device carrier, Firefox's stock probe reports H.264 hardware support, and its
 RDD process decodes local H.264 through Android MediaCodec. The Panfrost-backed
-`drisw` frontend now publishes Mesa's full DRI image extension when
-`PAN_MALI_DMABUF_IMPORT=1`; this lets Firefox import the exported NV12 R8 and
-GR88 planes as EGLImages in both RDD and the parent renderer. VA-API mode turns
-that opt-in on automatically. When release-fence mode is selected, the wrapper
+`drisw` frontend publishes Mesa's full DRI image extension from the renderer's
+Kbase DMA-BUF import capability; this lets Firefox import the exported NV12 R8
+and GR88 planes as EGLImages in both RDD and the parent renderer. When
+release-fence mode is selected, the wrapper
 also enables the rootless JM DMA-BUF wait so Panfrost does not submit a sampling
 batch until the MediaCodec writer fence signals. Firefox remains on X11 EGL, as required by its
 stock VA-API feature gate, while the new EGL DRI3 presenter displays its final
@@ -466,9 +529,8 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
 - Khronos VK-GL-CTS 3.2.8.0 targeted smoke groups passed 95/95 cases: 44
   GLES3, 41 GLES2, and 10 EGL. This is deliberately small coverage, not a
   conformance claim.
-- Surfaceless EGL now uses the explicit Kbase device even though the wrapper
-  sets `LIBGL_ALWAYS_SOFTWARE=1`; `surfaceless-probe` reports EGL 1.4 and
-  `Mali-G78 (Panfrost)` through the swrast-loader ABI.
+- Surfaceless EGL automatically discovers Kbase; `surfaceless-probe` reports
+  EGL 1.4 and `Mali-G78 (Panfrost)` through the non-DRM platform ABI.
 - Firefox's EGL probe completes and `about:support` reports WebRender and
   `mesa/panfrost` rather than a software device.
 - Firefox's RDD process imports the Tensor VA-API driver's R8 and GR88 NV12

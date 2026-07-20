@@ -86,7 +86,6 @@ The AHB allocator is layered on the existing X11 DRI3 route:
 export DISPLAY=:0
 export PAN_MALI_X11_DRI3=1
 export PAN_MALI_X11_AHB=1
-export PAN_MALI_DMABUF_IMPORT=1
 tensor-g1/panfork/run-panfrost-x11 glxgears
 ```
 

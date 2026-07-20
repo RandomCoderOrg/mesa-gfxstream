@@ -40,6 +40,7 @@
 #include "util/u_debug.h"
 #include "kopper_interface.h"
 #include "loader_dri_helper.h"
+#include "loader.h"
 
 static int xshm_error = 0;
 static int xshm_opcode = -1;
@@ -1197,14 +1198,13 @@ static struct glx_screen *
 driswCreateScreen(int screen, struct glx_display *priv)
 {
    const struct drisw_display *pdpyp = (struct drisw_display *)priv->driswDisplay;
-   const char *pan_mali_x11 = getenv("PAN_MALI_X11_SWRAST");
 
    if (pdpyp->zink && !debug_get_bool_option("LIBGL_KOPPER_DISABLE", false)) {
       return driswCreateScreenDriver(screen, priv, "zink");
    }
 
-   if (pan_mali_x11 && strcmp(pan_mali_x11, "0"))
-      return driswCreateScreenDriver(screen, priv, "panfrost");
+   if (loader_kbase_x11_enabled())
+      return driswCreateScreenDriver(screen, priv, "panfrost_kbase");
 
    return driswCreateScreenDriver(screen, priv, "swrast");
 }

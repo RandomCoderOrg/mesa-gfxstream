@@ -217,8 +217,8 @@ TENSOR_VAAPI=1 tensor-g1/desktop/run-firefox-panfrost \
 `TENSOR_VAAPI=1` disables Firefox's RDD subprocess sandbox because that sandbox
 cannot open the shared Unix socket and Android DMA heap inside PRoot. Content
 process sandboxing remains enabled. This is a security tradeoff and should stay
-an explicit per-launch opt-in. It also enables `PAN_MALI_DMABUF_IMPORT=1` for
-the Panfrost-backed `drisw` screen. Firefox stays on X11 EGL because its stock
+an explicit per-launch opt-in. The Panfrost-backed `drisw` screen advertises
+its Kbase DMA-BUF import capability automatically. Firefox stays on X11 EGL because its stock
 Linux feature gate requires EGL for DMA-BUF and VA-API. This fork adds the
 reusable DMA-BUF/DRI3 Present queue to Mesa's X11 EGL swrast loader, so final
 swaps no longer use the CPU-upload fallback that failed to paint under Mutter.

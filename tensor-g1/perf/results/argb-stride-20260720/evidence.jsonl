@@ -1,0 +1,5 @@
+{"schema":"tensor-perf-v1","kind":"x11-argb-surface","width":2240,"height":256,"depth":32,"tight_stride":8960,"stride_mod_64":0,"compositor_owner":2097172,"hold_ms":1500,"result":"pass"}
+{"schema":"tensor-perf-v1","kind":"panfrost-import","width":2240,"height":285,"format":"PIPE_FORMAT_B8G8R8A8_UNORM","bo_size":2555904,"handle_stride":8960,"layout_size":2553600,"shortfall":0}
+{"schema":"tensor-perf-v1","kind":"x11-argb-surface","width":2248,"height":256,"depth":32,"tight_stride":8992,"stride_mod_64":32,"compositor_owner":2097172,"hold_ms":1500,"result":"gpu-fault-0x5b"}
+{"schema":"tensor-perf-v1","kind":"panfrost-import","width":2248,"height":285,"format":"PIPE_FORMAT_B8G8R8A8_UNORM","bo_size":2564096,"handle_stride":8992,"layout_size":2562720,"shortfall":0}
+{"schema":"tensor-perf-v1","kind":"panfrost-fragment-fault","atom":51,"event":"0x5b","framebuffer_width":2264,"framebuffer_height":943,"destination_stride":9088,"destination_block_format":2}

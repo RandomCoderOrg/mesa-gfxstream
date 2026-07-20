@@ -10,8 +10,6 @@ prefix=${PANFROST_PREFIX:-/opt/panfork-tensor}
 libdir="$prefix/lib/aarch64-linux-gnu"
 
 export DISPLAY=${DISPLAY:-:0}
-export PAN_MALI_DEV=${PAN_MALI_DEV:-/dev/mali0}
-export MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-panfrost}
 export LIBGL_DRIVERS_PATH=${LIBGL_DRIVERS_PATH:-$libdir/dri}
 
 if [ -n "${LD_LIBRARY_PATH:-}" ]; then

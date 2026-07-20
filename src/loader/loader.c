@@ -103,6 +103,55 @@ loader_open_device(const char *device_name)
    return fd;
 }
 
+const char *
+loader_get_kbase_device_path(void)
+{
+   const char *device = os_get_option("PAN_MALI_DEV");
+
+   return device && device[0] ? device : "/dev/mali0";
+}
+
+int
+loader_open_kbase_device(void)
+{
+   /* Kbase's event reader expects EAGAIN after pending events are drained. */
+   return open(loader_get_kbase_device_path(),
+               O_RDWR | O_CLOEXEC | O_NONBLOCK);
+}
+
+bool
+loader_is_kbase_device_fd(int fd)
+{
+   struct stat candidate;
+   struct stat opened;
+
+   if (fd < 0 || fstat(fd, &opened) < 0 ||
+       stat(loader_get_kbase_device_path(), &candidate) < 0)
+      return false;
+
+   return S_ISCHR(opened.st_mode) && S_ISCHR(candidate.st_mode) &&
+          opened.st_rdev == candidate.st_rdev;
+}
+
+bool
+loader_kbase_x11_enabled(void)
+{
+   const char *override = os_get_option("PAN_MALI_X11_SWRAST");
+   int fd;
+
+   /* Retain the old variable as a diagnostic opt-out, but no longer require
+    * applications or desktop sessions to opt in. */
+   if (override && !strcmp(override, "0"))
+      return false;
+
+   fd = loader_open_kbase_device();
+   if (fd < 0)
+      return false;
+
+   close(fd);
+   return true;
+}
+
 static char *loader_get_kernel_driver_name(int fd)
 {
 #if HAVE_LIBDRM
@@ -567,6 +616,11 @@ loader_get_driver_for_fd(int fd)
       const char *override = os_get_option("MESA_LOADER_DRIVER_OVERRIDE");
       if (override)
          return strdup(override);
+   }
+
+   if (loader_is_kbase_device_fd(fd)) {
+      log_(_LOADER_DEBUG, "using Panfrost for Kbase fd %d\n", fd);
+      return strdup("panfrost");
    }
 
 #if defined(HAVE_LIBDRM) && defined(USE_DRICONF)

@@ -1,0 +1,340 @@
+[100m> LOGIN jammy:raw[0m
+dbus[18408]: Unknown username "whoopsie" in message bus configuration file
+dbus-daemon[18416]: [session uid=0 pid=18416] org.freedesktop.DBus.Error.AccessDenied: Failed to set fd limit to 65536: Operation not permitted
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.0' (uid=0 pid=18417 comm="startplasma-x11 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.0' (uid=0 pid=18417 comm="startplasma-x11 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.0' (uid=0 pid=18417 comm="startplasma-x11 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.0' (uid=0 pid=18417 comm="startplasma-x11 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.0' (uid=0 pid=18417 comm="startplasma-x11 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.0' (uid=0 pid=18417 comm="startplasma-x11 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.kde.KSplash' requested by ':1.0' (uid=0 pid=18417 comm="startplasma-x11 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.0' (uid=0 pid=18417 comm="startplasma-x11 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+MESA-LOADER: failed to retrieve device information
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.kde.KSplash'
+kdeinit5: preparing to launch '/usr/lib/aarch64-linux-gnu/libexec/kf5/klauncher'
+kdeinit5: Launched KLauncher, pid = 18461, result = 0
+Connecting to deprecated signal QDBusConnectionInterface::serviceOwnerChanged(QString,QString,QString)
+kdeinit5: opened connection to :0
+Initializing  "/usr/lib/aarch64-linux-gnu/qt5/plugins/plasma/kcms/systemsettings/kcm_style.so"
+kdeinit5: Got SETENV 'GTK_RC_FILES=/etc/gtk/gtkrc:/root/.gtkrc:/root/.config/gtkrc' from launcher.
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.5' (uid=0 pid=18465 comm="/usr/bin/kcminit_startup " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+kdeinit5: Got SETENV 'GTK2_RC_FILES=/etc/gtk-2.0/gtkrc:/root/.gtkrc-2.0:/root/.config/gtkrc-2.0' from launcher.
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+QDBusConnection: error: could not send signal to service "" path "//root/.kde/share/config/kdeglobals" interface "org.kde.kconfig.notify" member "ConfigChanged": Invalid object path: //root/.kde/share/config/kdeglobals
+Initializing  "/usr/lib/aarch64-linux-gnu/qt5/plugins/plasma/kcms/systemsettings/kcm_fonts.so"
+Initializing  "/usr/lib/aarch64-linux-gnu/qt5/plugins/plasma/kcms/systemsettings/kcm_mouse.so"
+kdeinit5: Got SETENV 'XCURSOR_THEME=breeze_cursors' from launcher.
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.5' (uid=0 pid=18465 comm="/usr/bin/kcminit_startup " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+kdeinit5: Got SETENV 'XCURSOR_SIZE=24' from launcher.
+org.kde.plasma.session: process job  "kcminit_startup" finished with exit code  0
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+MESA-LOADER: failed to retrieve device information
+kf.bluezqt: Cannot open /dev/rfkill for reading!
+Warning: Setting a new default format with a different version or profile after the global shared context is created may cause issues with context sharing.
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='ca.desrt.dconf' requested by ':1.8' (uid=0 pid=18481 comm="/usr/bin/kded5 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'ca.desrt.dconf'
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+xsettingsd: Created window 0x1000001 on screen 0 with timestamp 43694070
+xsettingsd: Selection _XSETTINGS_S0 is owned by 0x0
+xsettingsd: Took ownership of selection _XSETTINGS_S0
+xsettingsd: Reloading configuration
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+xsettingsd: Reloading configuration
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+xsettingsd: Reloading configuration
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+xsettingsd: Reloading configuration
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+xsettingsd: Reloading configuration
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+xsettingsd: Reloading configuration
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.kde.kglobalaccel' requested by ':1.7' (uid=0 pid=18485 comm="/usr/bin/kwin_x11 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+xsettingsd: Reloading configuration
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.kde.kglobalaccel'
+Qt: Session management error: networkIdsList argument is NULL
+xsettingsd: Reloading configuration
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+xsettingsd: Reloading configuration
+xsettingsd: Loaded 11 settings from /root/.config/xsettingsd/xsettingsd.conf
+kdeinit5: Got SETENV 'SESSION_MANAGER=local/localhost:@/tmp/.ICE-unix/18513,unix/localhost:/tmp/.ICE-unix/18513' from launcher.
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.11' (uid=0 pid=18513 comm="/usr/bin/ksmserver " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+kdeinit5: Got SETENV 'SESSION_MANAGER=local/localhost:@/tmp/.ICE-unix/18513,unix/localhost:/tmp/.ICE-unix/18513' from launcher.
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.systemd1' requested by ':1.11' (uid=0 pid=18513 comm="/usr/bin/ksmserver " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+kcm_touchpad: Using X11 backend
+Initializing  "/usr/lib/aarch64-linux-gnu/qt5/plugins/plasma/kcms/systemsettings/kcm_touchpad.so"
+kcm_touchpad: Using X11 backend
+Initializing  "/usr/lib/aarch64-linux-gnu/qt5/plugins/plasma/kcms/systemsettings/kcm_kgamma.so"
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/kaccess.desktop" ("/usr/bin/kaccess")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/powerdevil.desktop" ("/usr/lib/aarch64-linux-gnu/libexec/org_kde_powerdevil")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/baloo_file.desktop" ("/usr/lib/aarch64-linux-gnu/libexec/baloo_file")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/xembedsniproxy.desktop" ("/usr/bin/xembedsniproxy")
+Xlib XKB extension major= 1  minor= 0
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/pam_kwallet_init.desktop" ("/usr/share/libpam-kwallet-common/pam_kwallet_init")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/org.kde.plasmashell.desktop" ("/usr/bin/plasmashell")
+Baloo File Indexing has been disabled
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/polkit-kde-authentication-agent-1.desktop" ("/usr/lib/aarch64-linux-gnu/libexec/polkit-kde-authentication-agent-1")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/pulseaudio.desktop" ("/usr/bin/start-pulseaudio-x11")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/xdg-user-dirs.desktop" ("/usr/bin/xdg-user-dirs-update")
+Failure: Module initialization failed
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/gmenudbusmenuproxy.desktop" ("/usr/bin/gmenudbusmenuproxy")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/org.kde.discover.notifier.desktop" ("/usr/lib/aarch64-linux-gnu/libexec/DiscoverNotifier")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/org.kde.kdeconnect.daemon.desktop" ("/usr/lib/aarch64-linux-gnu/libexec/kdeconnectd")
+New PolkitAgentListener  0x3000130200
+Adding new listener  PolkitQt1::Agent::Listener(0x3000140920) for  0x3000130200
+Listener online
+"Cannot create unix session: No session for pid 18551"
+
+** (process:18551): CRITICAL **: 12:58:35.085: polkit_agent_listener_register_with_options: assertion 'POLKIT_IS_SUBJECT (subject)' failed
+"Cannot register authentication agent!"
+Authentication agent result: false
+Couldn't register listener!
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/im-launch.desktop" ("/usr/bin/sh", "-c", "if [ \"x$XDG_SESSION_TYPE\" = \"xwayland\" ] ; then exec env IM_CONFIG_CHECK_ENV=1 im-launch true; fi")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.kde.ActivityManager' requested by ':1.13' (uid=0 pid=18542 comm="/usr/lib/aarch64-linux-gnu/libexec/org_kde_powerde" label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+MESA-LOADER: failed to retrieve device information
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/org.kde.korgac.desktop" ("/usr/bin/korgac")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/geoclue-demo-agent.desktop" ("/usr/libexec/geoclue-2.0/demos/agent")
+X server XKB extension major= 1  minor= 0
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/snap-userd-autostart.desktop" ("/usr/bin/snap", "userd", "--autostart")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/gnome-shell-overrides-migration.desktop" ("/usr/libexec/gnome-shell-overrides-migration.sh")
+org.kde.libkbolt: Failed to connect to Bolt manager DBus interface: The name org.wicd.daemon was not provided by any .service files
+org.kde.bolt.kded: Couldn't connect to Bolt DBus daemon
+Installing the delayed initialization callback.
+Aborting shell load: The activity manager daemon (kactivitymanagerd) is not running.
+If this Plasma has been installed into a custom prefix, verify that its D-Bus services dir is known to the system for the daemon to be activatable.
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/kup-daemon.desktop" ("/usr/bin/kup-daemon")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/org.gnome.Evolution-alarm-notify.desktop" ("/usr/libexec/evolution-data-server/evolution-alarm-notify")
+org.kde.plasma.session: Starting autostart service  "/etc/xdg/autostart/tracker-miner-fs-3.desktop" ("/usr/libexec/tracker-miner-fs-3")
+MESA-LOADER: failed to retrieve device information
+
+(evolution-alarm-notify:18615): dbind-WARNING **: 12:58:36.550: AT-SPI: Error retrieving accessibility bus address: org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.gtk.vfs.Daemon' requested by ':1.26' (uid=0 pid=18616 comm="/usr/libexec/tracker-miner-fs-3 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+kup.daemon: "Kup is not enabled, enable it from the system settings module. You can do that by running kcmshell5 kup"
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.gtk.vfs.Daemon'
+fuse: failed to open /dev/fuse: Permission denied
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.gnome.evolution.dataserver.Sources5' requested by ':1.27' (uid=0 pid=18615 comm="/usr/libexec/evolution-data-server/evolution-alarm" label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+UdevQt: unable to create udev monitor connection
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.gnome.evolution.dataserver.Sources5'
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.gtk.vfs.UDisks2VolumeMonitor' requested by ':1.26' (uid=0 pid=18616 comm="/usr/libexec/tracker-miner-fs-3 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.Notifications' requested by ':1.19' (uid=0 pid=18567 comm="/usr/lib/aarch64-linux-gnu/libexec/kdeconnectd " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.27' (uid=0 pid=18615 comm="/usr/libexec/evolution-data-server/evolution-alarm" label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.portal.Documents' requested by ':1.32' (uid=0 pid=18669 comm="/usr/libexec/xdg-desktop-portal " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.33' (uid=0 pid=18693 comm="/usr/libexec/xdg-document-portal " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+OpenGL vendor string:                   Panfrost
+OpenGL renderer string:                 Mali-G78 (Panfrost)
+OpenGL version string:                  3.0 Mesa 23.0.0-devel (git-120202c675)
+OpenGL shading language version string: 1.30
+Driver:                                 Panfrost
+GPU class:                              Unknown
+OpenGL version:                         3.0
+GLSL version:                           1.30
+Mesa version:                           23.0
+X server version:                       1.21.1
+Linux kernel version:                   5.4.2
+Requires strict binding:                yes
+GLSL shaders:                           yes
+Texture NPOT support:                   yes
+Virtual Machine:                        no
+kwin_platform_x11_standalone: glSwapInterval is unsupported
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: failed to open /dev/fuse: Permission denied
+error: fuse init failed: Can't mount path /tmp/runtime-root/doc
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.impl.portal.desktop.gnome' requested by ':1.32' (uid=0 pid=18669 comm="/usr/libexec/xdg-desktop-portal " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+Delayed initialization.
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.gtk.vfs.UDisks2VolumeMonitor'
+Reloading the khotkeys configuration
+Version 2 File!
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.gtk.vfs.AfcVolumeMonitor' requested by ':1.26' (uid=0 pid=18616 comm="/usr/libexec/tracker-miner-fs-3 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+true
+Imported file "/usr/share/khotkeys/defaults.khotkeys"
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.gtk.vfs.AfcVolumeMonitor'
+Imported file "/usr/share/khotkeys/kde32b1.khotkeys"
+Imported file "/usr/share/khotkeys/konqueror_gestures_kde321.khotkeys"
+MESA-LOADER: failed to retrieve device information
+Imported file "/usr/share/khotkeys/konsole.khotkeys"
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.gtk.vfs.MTPVolumeMonitor' requested by ':1.26' (uid=0 pid=18616 comm="/usr/libexec/tracker-miner-fs-3 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+MESA-LOADER: failed to retrieve device information
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.gtk.vfs.MTPVolumeMonitor'
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.gtk.vfs.GPhoto2VolumeMonitor' requested by ':1.26' (uid=0 pid=18616 comm="/usr/libexec/tracker-miner-fs-3 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.gtk.vfs.GPhoto2VolumeMonitor'
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.gtk.vfs.GoaVolumeMonitor' requested by ':1.26' (uid=0 pid=18616 comm="/usr/libexec/tracker-miner-fs-3 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.freedesktop.impl.portal.desktop.gnome'
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.gtk.vfs.GoaVolumeMonitor'
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.bluez.obex' requested by ':1.6' (uid=0 pid=18481 comm="/usr/bin/kded5 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.bluez.obex'
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.kde.KScreen' requested by ':1.6' (uid=0 pid=18481 comm="/usr/bin/kded5 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+kf.bluezqt: PendingCall Error: "Launch helper exited with unknown return code 1"
+Registering ":1.23/StatusNotifierItem" to system tray
+Registering ":1.29/StatusNotifierItem" to system tray
+
+(tracker-miner-fs-3:18616): GLib-CRITICAL **: 12:58:38.767: g_source_destroy: assertion 'source != NULL' failed
+
+(tracker-miner-fs-3:18616): GLib-CRITICAL **: 12:58:38.768: g_source_unref: assertion 'source != NULL' failed
+
+(tracker-miner-fs-3:18616): Tracker-WARNING **: 12:58:38.773: Couldn't get INotify monitor limit from:'/proc/sys/fs/inotify/max_user_watches', Failed to open file “/proc/sys/fs/inotify/max_user_watches”: Permission denied
+
+** (/usr/libexec/xdg-desktop-portal:18669): WARNING **: 12:58:38.826: Failed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.NoReply: Message recipient disconnected from message bus without replying
+org.kde.powerdevil: org.kde.powerdevil.chargethresholdhelper.getthreshold failed "Charge thresholds not supported"
+org.kde.powerdevil: org.kde.powerdevil.backlighthelper.brightness failed
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.kde.KScreen'
+
+** (/usr/libexec/xdg-desktop-portal:18669): WARNING **: 12:58:38.888: Failed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.NoReply: Message recipient disconnected from message bus without replying
+kscreen.xrandr: Connected output 64 to CRTC 63
+kscreen.xcb.helper: Detected XRandR 1.6
+kscreen.xcb.helper: Event Base:  88
+kscreen.xcb.helper: Event Error:  145
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.kde.ActivityManager'
+Aborting shell load: The activity manager daemon (kactivitymanagerd) is not running.
+If this Plasma has been installed into a custom prefix, verify that its D-Bus services dir is known to the system for the daemon to be activatable.
+
+** (/usr/libexec/xdg-desktop-portal:18669): WARNING **: 12:58:38.972: Failed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.NoReply: Message recipient disconnected from message bus without replying
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.impl.portal.desktop.kde' requested by ':1.32' (uid=0 pid=18669 comm="/usr/libexec/xdg-desktop-portal " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+kscreen.kded: PowerDevil SuspendSession action not available!
+UdevQt: unable to create udev monitor connection
+kscreen.xrandr: XRandR::setConfig
+kscreen.xrandr: Requested screen size is QSize(2264, 943)
+kscreen.xrandr: Needed CRTCs:  1
+kscreen.xrandr: Actions to perform:
+	Primary Output: true
+kscreen.xrandr: 		Old: 0
+		New: 64
+kscreen.xrandr: 	Change Screen Size: false
+kscreen.xrandr: 	Disable outputs: false
+kscreen.xrandr: 	Change outputs: false
+kscreen.xrandr: 	Enable outputs: false
+kscreen.xrandr: RRSetOutputPrimary
+	New primary: 64
+kscreen.xrandr: XRandR::setConfig done!
+kscreen.xcb.helper: RRNotify_OutputChange
+kscreen.xcb.helper: 	Timestamp:  43684217
+kscreen.xcb.helper: 	Output:  64
+kscreen.xcb.helper: 	CRTC:  63
+kscreen.xcb.helper: 	Mode:  62
+kscreen.xcb.helper: 	Rotation:  "Rotate_0"
+kscreen.xcb.helper: 	Connection:  "Connected"
+kscreen.xcb.helper: 	Subpixel Order:  0
+kscreen.xcb.helper: RRScreenChangeNotify
+kscreen.xcb.helper: 	Timestamp:  43684217
+kscreen.xcb.helper: 	Config_timestamp:  43684217
+kscreen.xcb.helper: 	Window: 50331653
+kscreen.xcb.helper: 	Root: 1297
+kscreen.xcb.helper: 	Rotation:  "Rotate_0"
+kscreen.xcb.helper: 	Size ID: 0
+kscreen.xcb.helper: 	Size:  2264 943
+kscreen.xcb.helper: 	SizeMM:  599 250
+kscreen.xcb.helper: RRNotify_OutputChange
+kscreen.xcb.helper: 	Timestamp:  43684217
+kscreen.xcb.helper: 	Output:  64
+kscreen.xcb.helper: 	CRTC:  63
+kscreen.xcb.helper: 	Mode:  62
+kscreen.xcb.helper: 	Rotation:  "Rotate_0"
+kscreen.xcb.helper: 	Connection:  "Connected"
+kscreen.xcb.helper: 	Subpixel Order:  0
+kscreen.xrandr: XRandROutput 64 update
+	m_connected: 0
+	m_crtc XRandRCrtc(0x3000100c30)
+	CRTC: 63
+	MODE: 62
+	Connection: 0
+	Primary: true
+kscreen.xrandr: Output 64 : connected = true , enabled = true
+kscreen.xrandr: XRandROutput 64 update
+	m_connected: 0
+	m_crtc XRandRCrtc(0x3000100c30)
+	CRTC: 63
+	MODE: 62
+	Connection: 0
+	Primary: true
+kscreen.xrandr: Output 64 : connected = true , enabled = true
+kf.plasma.quick: Applet preload policy set to 1
+Could not load a session backend. Session management operations such as shutdown will not be operational. This is a setup issue.
+kwin_core: XCB error: 10 (BadAccess), sequence: 795, resource id: 1297, major code: 141 (Composite), minor code: 2 (RedirectSubwindows)
+org.kde.powerdevil: DPMS extension not available
+kf.bluezqt: Cannot open /dev/rfkill for reading!
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.freedesktop.impl.portal.desktop.kde'
+xdp-kde: Desktop portal registered successfully
+kscreen.xrandr: Emitting configChanged()
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.32' (uid=0 pid=18669 comm="/usr/libexec/xdg-desktop-portal " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+org.kde.powerdevil: Handle button events action could not check for screen configuration
+org.kde.powerdevil: The profile  "AC" tried to activate "DimDisplay" a non-existent action. This is usually due to an installation problem, a configuration problem, or because the action is not supported
+org.kde.powerdevil: The profile  "AC" tried to activate "DPMSControl" a non-existent action. This is usually due to an installation problem, a configuration problem, or because the action is not supported
+org.kde.powerdevil: org.kde.powerdevil.chargethresholdhelper.getthreshold failed "Charge thresholds not supported"
+
+(xdg-desktop-portal-gtk:18816): dbind-WARNING **: 12:58:39.901: AT-SPI: Error retrieving accessibility bus address: org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.freedesktop.impl.portal.desktop.gtk'
+
+** (/usr/libexec/xdg-desktop-portal:18669): WARNING **: 12:58:40.362: Failed connect to PipeWire: Couldn't connect to PipeWire
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.secrets' requested by ':1.32' (uid=0 pid=18669 comm="/usr/libexec/xdg-desktop-portal " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+** Message: 12:58:40.476: couldn't connect to control socket at: /tmp/runtime-root/keyring/control: Connection refused
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.freedesktop.secrets'
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.freedesktop.portal.Desktop'
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.freedesktop.Tracker3.Miner.Extract' requested by ':1.26' (uid=0 pid=18616 comm="/usr/libexec/tracker-miner-fs-3 " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.gnome.evolution.dataserver.Calendar8' requested by ':1.27' (uid=0 pid=18615 comm="/usr/libexec/evolution-data-server/evolution-alarm" label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.gnome.evolution.dataserver.Calendar8'
+dbus-daemon[18416]: [session uid=0 pid=18416] Activating service name='org.gnome.evolution.dataserver.AddressBook10' requested by ':1.49' (uid=0 pid=18849 comm="/usr/libexec/evolution-calendar-factory " label="u:r:untrusted_app_27:s0:c113,c257,c512,c768")
+qml: PlasmaExtras.ScrollArea is deprecated. Use PlasmaComponents3.ScrollView instead.
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.gnome.evolution.dataserver.AddressBook10'
+trying to show an empty dialog
+file:///usr/share/plasma/shells/org.kde.plasma.desktop/contents/views/Desktop.qml:118:19: QML Loader: Binding loop detected for property "height"
+file:///usr/share/plasma/shells/org.kde.plasma.desktop/contents/views/Desktop.qml:118:19: QML Loader: Binding loop detected for property "height"
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.freedesktop.Tracker3.Miner.Extract'
+file:///usr/share/plasma/plasmoids/org.kde.plasma.digitalclock/contents/ui/DigitalClock.qml:531:9: QML Label: Binding loop detected for property "height"
+file:///usr/share/plasma/plasmoids/org.kde.plasma.digitalclock/contents/ui/DigitalClock.qml:496:13: QML Label: Binding loop detected for property "height"
+trying to show an empty dialog
+UdevQt: unable to create udev monitor connection
+Trying to use rootObject before initialization is completed, whilst using setInitializationDelayed. Forcing completion
+Entry is not valid "org.kde.kontact.desktop" QSharedPointer(0x3000efc470)
+Entry is not valid "org.kde.kontact.desktop" QSharedPointer(0x3000efc220)
+file:///usr/share/plasma/plasmoids/org.kde.plasma.digitalclock/contents/ui/DigitalClock.qml:496:13: QML Label: Binding loop detected for property "height"
+file:///usr/share/plasma/plasmoids/org.kde.plasma.digitalclock/contents/ui/DigitalClock.qml:531:9: QML Label: Binding loop detected for property "height"
+file:///usr/share/plasma/plasmoids/org.kde.plasma.digitalclock/contents/ui/DigitalClock.qml:553:5: QML Label: Binding loop detected for property "height"
+trying to show an empty dialog
+file:///usr/share/plasma/plasmoids/org.kde.panel/contents/ui/main.qml:18:1: QML DropArea (parent or ancestor of QQuickLayoutAttached): Binding loop detected for property "minimumWidth"
+org.kde.klipper: Failed to load history resource. Clipboard history cannot be read. :  History file does not exist
+Cyclic dependency detected between "file:///usr/share/plasma/plasmoids/org.kde.plasma.notifications/contents/ui/global/Globals.qml" and "file:///usr/share/plasma/plasmoids/org.kde.plasma.notifications/contents/ui/NotificationHeader.qml"
+dbus-daemon[18416]: [session uid=0 pid=18416] Successfully activated service 'org.freedesktop.Notifications'
+Registering "org.kde.StatusNotifierHost-18548" as system tray
+file:///usr/share/plasma/plasmoids/org.kde.plasma.private.systemtray/contents/ui/ExpandedRepresentation.qml:165:9: QML HiddenItemsView: Binding loop detected for property "implicitHeight"
+Plasma Shell startup completed
+trying to show an empty dialog
+file:///usr/share/plasma/shells/org.kde.plasma.desktop/contents/views/Desktop.qml:118:19: QML Loader: Binding loop detected for property "height"
+file:///usr/share/plasma/shells/org.kde.plasma.desktop/contents/views/Desktop.qml:118:19: QML Loader: Binding loop detected for property "height"
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 5241, resource id: 4194335, major code: 18 (ChangeProperty), minor code: 0
+trying to show an empty dialog
+QFont::setPointSizeF: Point size <= 0 (0.000000), must be greater than 0
+file:///usr/share/plasma/plasmoids/org.kde.plasma.battery/contents/ui/CompactRepresentation.qml:71:17: Unable to assign [undefined] to int
+org.kde.plasma.pulseaudio: No object for name "OpenSL_ES_sink.monitor"
+trying to show an empty dialog
+qml: PlasmaExtras.ScrollArea is deprecated. Use PlasmaComponents3.ScrollView instead.
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 9146, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 9148, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 9150, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 9152, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 9153, resource id: 4194305, major code: 15 (QueryTree), minor code: 0
+xdp-kde-background: GetAppState called: no parameters
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 10752, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 10754, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 10755, resource id: 4194305, major code: 15 (QueryTree), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 12305, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 12307, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 12308, resource id: 4194305, major code: 15 (QueryTree), minor code: 0
+kwin_core: XCB error: 150 (BadDamage), sequence: 12396, resource id: 14680384, major code: 142 (DAMAGE), minor code: 3 (Subtract)
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 13909, resource id: 4194305, major code: 15 (QueryTree), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 15478, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 15480, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 15482, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 15484, resource id: 4194305, major code: 25 (SendEvent), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 15485, resource id: 4194305, major code: 15 (QueryTree), minor code: 0
+qt.qpa.xcb: QXcbConnection: XCB error: 3 (BadWindow), sequence: 17093, resource id: 4194305, major code: 15 (QueryTree), minor code: 0
+kwin_core: XCB error: 150 (BadDamage), sequence: 17180, resource id: 14680469, major code: 142 (DAMAGE), minor code: 3 (Subtract)

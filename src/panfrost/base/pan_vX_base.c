@@ -744,7 +744,11 @@ kbase_import_dmabuf(kbase k, int fd)
                         .phandle = (uintptr_t) &dup,
                         .type = BASE_MEM_IMPORT_TYPE_UMM,
                         /* Usage flags: CPU/GPU reads/writes */
-                        .flags = 0xf,
+                        .flags = 0xf
+#ifdef BASE_MEM_IMPORT_SYNC_ON_MAP_UNMAP
+                               | BASE_MEM_IMPORT_SYNC_ON_MAP_UNMAP
+#endif
+                        ,
                 }
         };
 

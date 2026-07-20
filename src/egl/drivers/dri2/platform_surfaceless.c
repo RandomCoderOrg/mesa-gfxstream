@@ -234,17 +234,10 @@ static const __DRIextension *swrast_loader_extensions[] = {
 static bool
 surfaceless_probe_mali(_EGLDisplay *disp)
 {
-   const char *device = getenv("PAN_MALI_DEV");
+   const char *device = loader_get_kbase_device_path();
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 
-   if (!device || !device[0])
-      return false;
-
-   /* Kbase's event reader expects EAGAIN after draining pending events.  Some
-    * Kbase implementations reject enabling O_NONBLOCK with F_SETFL, so it
-    * must be part of the initial open just like the kmsro Mali fallback.
-    */
-   dri2_dpy->fd = open(device, O_RDWR | O_CLOEXEC | O_NONBLOCK);
+   dri2_dpy->fd = loader_open_kbase_device();
    if (dri2_dpy->fd < 0)
       return false;
 
@@ -253,7 +246,7 @@ surfaceless_probe_mali(_EGLDisplay *disp)
     * Panfrost renderer through EGL_MESA_device_software.
     */
    disp->Device = _eglAddKbaseDevice(device);
-   dri2_dpy->driver_name = strdup("panfrost");
+   dri2_dpy->driver_name = strdup("panfrost_kbase");
 
    /* This Panfork Gallium target exposes the swrast-loader ABI (the same ABI
     * used by the working X11 CPU presenter), not DRI_IMAGE_DRIVER.  Loading
@@ -378,12 +371,9 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
    dri2_dpy->fd = -1;
    disp->DriverData = (void *) dri2_dpy;
 
-   /* PAN_MALI_DEV is an explicit request for the rootless Kbase backend.  The
-    * X11 frontend also sets ForceSoftware to select its patched presentation
-    * path, but that must not turn a WebKit surfaceless helper into llvmpipe.
-    * If the explicit Kbase probe fails, retain Mesa's normal hardware or
-    * software fallback order.
-    */
+   /* Prefer an accessible Kbase device before enumerating DRM render nodes.
+    * This is a hardware platform backend even though Android has no DRM node.
+    * If the probe fails, retain Mesa's normal hardware/software order. */
    driver_loaded = surfaceless_probe_mali(disp);
 
    if (!driver_loaded)

@@ -1257,7 +1257,56 @@ GENX(pandecode_abort_on_fault)(mali_ptr jc_gpu_va)
 
                 /* Ensure the job is marked COMPLETE */
                 if (h.exception_status != 0x1) {
-                        fprintf(stderr, "Incomplete job or timeout\n");
+                        if (h.type == MALI_JOB_TYPE_FRAGMENT) {
+                                struct mali_fragment_job_packed *
+                                        PANDECODE_PTR_VAR(fragment, jc_gpu_va);
+                                pan_section_unpack(fragment, FRAGMENT_JOB,
+                                                   PAYLOAD, payload);
+#if PAN_ARCH >= 5
+                                mali_ptr fbd_va = payload.framebuffer &
+                                                  ~MALI_FBD_TAG_MASK;
+                                const void *PANDECODE_PTR_VAR(fb, fbd_va);
+                                pan_section_unpack(fb, FRAMEBUFFER, PARAMETERS,
+                                                   params);
+                                mali_ptr rt_va = fbd_va + pan_size(FRAMEBUFFER);
+                                if (params.has_zs_crc_extension)
+                                        rt_va += pan_size(ZS_CRC_EXTENSION);
+                                const struct mali_render_target_packed *
+                                        PANDECODE_PTR_VAR(rt, rt_va);
+                                pan_unpack(rt, RENDER_TARGET, target);
+                                fprintf(stderr,
+                                        "Fragment payload: fbd=0x%" PRIx64
+                                        " bounds=(%u,%u)-(%u,%u)"
+                                        " size=%ux%u rt=0x%" PRIx64
+                                        " rgb=0x%" PRIx64
+                                        " stride=%u write=%u block=%u\n",
+                                        payload.framebuffer,
+                                        payload.bound_min_x,
+                                        payload.bound_min_y,
+                                        payload.bound_max_x,
+                                        payload.bound_max_y,
+                                        params.width, params.height, rt_va,
+                                        target.rgb.base,
+                                        target.rgb.row_stride,
+                                        target.write_enable,
+                                        target.writeback_block_format);
+#else
+                                fprintf(stderr,
+                                        "Fragment payload: fbd=0x%" PRIx64
+                                        " bounds=(%u,%u)-(%u,%u)\n",
+                                        payload.framebuffer,
+                                        payload.bound_min_x,
+                                        payload.bound_min_y,
+                                        payload.bound_max_x,
+                                        payload.bound_max_y);
+#endif
+                        }
+                        fprintf(stderr,
+                                "Incomplete job or timeout: jc=0x%" PRIx64
+                                " type=%u status=0x%x task=%u fault=0x%" PRIx64
+                                " next=0x%" PRIx64 "\n",
+                                jc_gpu_va, h.type, h.exception_status,
+                                h.first_incomplete_task, h.fault_pointer, h.next);
                         fflush(NULL);
                         abort();
                 }

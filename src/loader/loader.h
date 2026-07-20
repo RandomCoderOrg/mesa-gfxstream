@@ -43,6 +43,21 @@ struct __DRIextensionRec;
 int
 loader_open_device(const char *);
 
+/* Android kernels expose Mali through Kbase rather than a DRM render node.
+ * These helpers keep that discovery policy in the loader instead of making
+ * every EGL/GLX frontend depend on launcher environment variables. */
+const char *
+loader_get_kbase_device_path(void);
+
+int
+loader_open_kbase_device(void);
+
+bool
+loader_is_kbase_device_fd(int fd);
+
+bool
+loader_kbase_x11_enabled(void);
+
 int
 loader_open_render_node(const char *name);
 

@@ -1,0 +1,61 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -x "$script_dir/../panfork/run-panfrost-x11" ]; then
+   panfork_x11="$script_dir/../panfork/run-panfrost-x11"
+elif [ -x "$script_dir/../run-panfrost-x11" ]; then
+   # Compatibility with early device-side checkouts.
+   panfork_x11="$script_dir/../run-panfrost-x11"
+else
+   echo "run-panfrost-x11 was not found next to the desktop scripts" >&2
+   exit 1
+fi
+
+export DISPLAY="${DISPLAY:-:0}"
+export XDG_SESSION_TYPE=x11
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+export DESKTOP_SESSION=plasma
+export KDE_FULL_SESSION=true
+export KDE_SESSION_VERSION=5
+export QT_QPA_PLATFORM=xcb
+export QT_X11_NO_MITSHM=1
+
+# Application OpenGL remains accelerated by Panfrost when KWin compositing is
+# disabled. This is the practical default: compositing through the stable CPU
+# presenter adds another full-window render/copy and delivered only about
+# 13 FPS in the controlled window-motion probe. Set KWIN_COMPOSE=O2 to retain
+# Plasma effects while investigating the compositor path.
+export KWIN_COMPOSE="${KWIN_COMPOSE:-N}"
+export PAN_MALI_X11_DRI3="${PAN_MALI_X11_DRI3:-0}"
+export PAN_MALI_X11_AHB="${PAN_MALI_X11_AHB:-0}"
+export PAN_MESA_DEBUG="${PAN_MESA_DEBUG:-sync}"
+
+# PRoot does not have a login manager to create either bus. Supply a private
+# system bus and let dbus-run-session own the Plasma session bus. Only remove
+# the system-bus files after a failed round-trip proves that they are stale.
+if ! dbus-send --system --type=method_call \
+   --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames \
+   >/dev/null 2>&1; then
+   mkdir -p /run/dbus
+   rm -f /run/dbus/pid /run/dbus/system_bus_socket
+   dbus-daemon --system --fork
+fi
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-root}"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export PLASMA_SESSION_BUS_FILE="$XDG_RUNTIME_DIR/plasma-session-bus"
+
+# XScreenSaver idle time predates this PRoot session, so Plasma otherwise
+# locks immediately and cannot associate an unlock attempt with a real login.
+kwriteconfig5 --file kscreenlockerrc --group Daemon --key Autolock false
+kwriteconfig5 --file kscreenlockerrc --group Daemon --key LockOnResume false
+
+exec "$panfork_x11" dbus-run-session -- sh -c '
+   umask 077
+   printf "%s\n" "$DBUS_SESSION_BUS_ADDRESS" >"$PLASMA_SESSION_BUS_FILE"
+   exec startplasma-x11
+'

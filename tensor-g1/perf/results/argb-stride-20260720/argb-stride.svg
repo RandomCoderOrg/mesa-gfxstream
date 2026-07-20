@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="500" viewBox="0 0 920 500">
+  <rect width="920" height="500" fill="#f7f8fa"/>
+  <g font-family="sans-serif" fill="#20242b">
+    <text x="460" y="38" text-anchor="middle" font-size="25" font-weight="700">Panfrost imported ARGB row-stride result</text>
+    <text x="460" y="66" text-anchor="middle" font-size="15">KWin compositor, Mali-G78, identical 32-bit X11 surface probe</text>
+    <line x1="105" y1="405" x2="860" y2="405" stroke="#20242b" stroke-width="2"/>
+    <line x1="105" y1="105" x2="105" y2="405" stroke="#20242b" stroke-width="2"/>
+    <line x1="105" y1="405" x2="860" y2="405" stroke="#d8dde5"/>
+    <line x1="105" y1="255" x2="860" y2="255" stroke="#d8dde5"/>
+    <line x1="105" y1="105" x2="860" y2="105" stroke="#d8dde5"/>
+    <text x="88" y="411" text-anchor="end" font-size="16">0</text>
+    <text x="88" y="261" text-anchor="end" font-size="16">32</text>
+    <text x="88" y="111" text-anchor="end" font-size="16">64</text>
+    <text x="28" y="260" transform="rotate(-90 28 260)" text-anchor="middle" font-size="18">Row-stride remainder modulo 64 bytes</text>
+    <rect x="190" y="397" width="180" height="8" rx="4" fill="#3c9d65"/>
+    <text x="280" y="382" text-anchor="middle" font-size="22" font-weight="700" fill="#247549">PASS</text>
+    <text x="280" y="439" text-anchor="middle" font-size="18">2240 px / 8960 B</text>
+    <rect x="555" y="255" width="180" height="150" rx="4" fill="#d94b4b"/>
+    <text x="645" y="237" text-anchor="middle" font-size="22" font-weight="700" fill="#ad2f2f">GPU FAULT 0x5b</text>
+    <text x="645" y="439" text-anchor="middle" font-size="18">2248 px / 8992 B</text>
+    <text x="460" y="480" text-anchor="middle" font-size="15">An eight-pixel width change is sufficient to reproduce Plasma's compositor failure.</text>
+  </g>
+</svg>

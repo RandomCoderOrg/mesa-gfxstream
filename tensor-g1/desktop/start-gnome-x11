@@ -24,7 +24,6 @@ export GDK_BACKEND=x11
 # EGL loader now has a DRI3 DMA-BUF queue, but it has only been validated with
 # Firefox so far. Rendering itself still happens on Mali-G78 through Panfrost.
 export PAN_MALI_X11_DRI3="${PAN_MALI_X11_DRI3:-0}"
-export PAN_MALI_DMABUF_IMPORT="${PAN_MALI_DMABUF_IMPORT:-0}"
 export PAN_MESA_DEBUG="${PAN_MESA_DEBUG:-sync}"
 
 # GNOME Shell 42 decides whether logind exists solely by checking this runtime

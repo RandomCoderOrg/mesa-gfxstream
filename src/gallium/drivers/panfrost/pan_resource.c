@@ -287,6 +287,25 @@ panfrost_bo_mmap_scanout(struct panfrost_bo *bo,
         bo->cached = false;
 }
 
+/* Kbase imports the DMA-BUF into the GPU address space, but that mapping is
+ * not a dependable CPU mapping on Android. In particular, touching it for
+ * glReadPixels can raise SIGBUS. Keep Kbase's mapping alive for GPU access and
+ * use the DMA-BUF fd itself for the CPU address of rootless display targets. */
+static bool
+panfrost_bo_mmap_dmabuf(struct panfrost_bo *bo, int fd)
+{
+        void *addr = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                          fd, 0);
+        if (addr == MAP_FAILED) {
+                fprintf(stderr, "DMA-BUF mmap failed: %s\n", strerror(errno));
+                return false;
+        }
+
+        bo->munmap_ptr = bo->ptr.cpu;
+        bo->ptr.cpu = addr;
+        return true;
+}
+
 static struct pipe_resource *
 panfrost_resource_from_handle(struct pipe_screen *pscreen,
                               const struct pipe_resource *templat,
@@ -345,6 +364,26 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
         if (!bo) {
                 FREE(rsc);
                 return NULL;
+        }
+
+        const char *import_debug_env = getenv("PAN_MALI_IMPORT_DEBUG");
+        const bool import_debug = import_debug_env &&
+                                  strcmp(import_debug_env, "0");
+        if (import_debug || bo->size < rsc->image.layout.data_size) {
+                const size_t shortfall =
+                        bo->size < rsc->image.layout.data_size ?
+                        rsc->image.layout.data_size - bo->size : 0;
+                fprintf(stderr,
+                        "PANFROST-IMPORT fd=%d gpu=0x%llx bo_size=%zu "
+                        "width=%u height=%u depth=%u format=%s modifier=0x%llx "
+                        "handle_stride=%u handle_offset=%u row_stride=%u "
+                        "layout_size=%u shortfall=%zu\n",
+                        whandle->handle, (unsigned long long)bo->ptr.gpu,
+                        bo->size, prsc->width0, prsc->height0, prsc->depth0,
+                        util_format_name(prsc->format),
+                        (unsigned long long)mod, whandle->stride,
+                        whandle->offset, rsc->image.layout.slices[0].row_stride,
+                        rsc->image.layout.data_size, shortfall);
         }
 
         rsc->image.data.bo = bo;
@@ -607,7 +646,6 @@ panfrost_should_tile(struct panfrost_device *dev,
                      const struct panfrost_resource *pres,
                      enum pipe_format fmt)
 {
-        const char *x11_swrast = getenv("PAN_MALI_X11_SWRAST");
         const unsigned valid_binding =
                 PIPE_BIND_DEPTH_STENCIL |
                 PIPE_BIND_RENDER_TARGET |
@@ -617,9 +655,11 @@ panfrost_should_tile(struct panfrost_device *dev,
                 PIPE_BIND_SCANOUT |
                 PIPE_BIND_SHARED;
 
-        /* The X11 bridge reads display targets back on the CPU every frame. */
+        /* A non-DRM Kbase device has no native scanout allocator. Its display
+         * targets are consumed by the platform presenter and must remain
+         * linear regardless of how the frontend discovered Panfrost. */
         if ((pres->base.bind & PIPE_BIND_DISPLAY_TARGET) &&
-            x11_swrast && strcmp(x11_swrast, "0"))
+            dev->kbase)
                 return false;
 
         /* The purpose of tiling is improving locality in both X- and
@@ -959,9 +999,11 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                 }
 
                 panfrost_bo_mmap_scanout(so->image.data.bo, dev->ro, so->scanout);
-        } else if ((template->bind & PIPE_BIND_DISPLAY_TARGET) &&
-                   getenv("PAN_MALI_X11_DRI3_ACTIVE") &&
-                   strcmp(getenv("PAN_MALI_X11_DRI3_ACTIVE"), "0") &&
+        } else if (dev->kbase &&
+                   (((template->bind & PIPE_BIND_DISPLAY_TARGET) &&
+                     getenv("PAN_MALI_X11_DRI3_ACTIVE") &&
+                     strcmp(getenv("PAN_MALI_X11_DRI3_ACTIVE"), "0")) ||
+                    (template->bind & PIPE_BIND_SCANOUT)) &&
                    so->image.layout.modifier == DRM_FORMAT_MOD_LINEAR) {
                 const char *heap_name = getenv("PAN_MALI_DMA_HEAP");
                 char heap_path[128];
@@ -972,12 +1014,18 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                 int heap_fd;
 
                 int ahb_fd = -1;
-                if (tensor_ahb_allocate(so, template, &ahb_fd)) {
+                if ((template->bind & PIPE_BIND_DISPLAY_TARGET) &&
+                    tensor_ahb_allocate(so, template, &ahb_fd)) {
                         so->image.data.bo = panfrost_bo_import(dev, ahb_fd);
+                        bool cpu_mapped = so->image.data.bo &&
+                                          panfrost_bo_mmap_dmabuf(
+                                                  so->image.data.bo, ahb_fd);
                         close(ahb_fd);
-                        if (!so->image.data.bo) {
+                        if (!cpu_mapped) {
                                 fprintf(stderr,
-                                        "Panfork DRI3 AHardwareBuffer Kbase import failed\n");
+                                        "Panfork DRI3 AHardwareBuffer import or CPU map failed\n");
+                                if (so->image.data.bo)
+                                        panfrost_bo_unreference(so->image.data.bo);
                                 tensor_ahb_release(so->tensor_ahb_id);
                                 free(so);
                                 return NULL;
@@ -1010,9 +1058,15 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                 close(heap_fd);
 
                 so->image.data.bo = panfrost_bo_import(dev, allocation.fd);
+                bool cpu_mapped = so->image.data.bo &&
+                                  panfrost_bo_mmap_dmabuf(
+                                          so->image.data.bo, allocation.fd);
                 close(allocation.fd);
-                if (!so->image.data.bo) {
-                        fprintf(stderr, "Panfork DRI3 Kbase import failed\n");
+                if (!cpu_mapped) {
+                        fprintf(stderr,
+                                "Panfork DRI3 Kbase import or CPU map failed\n");
+                        if (so->image.data.bo)
+                                panfrost_bo_unreference(so->image.data.bo);
                         free(so);
                         return NULL;
                 }

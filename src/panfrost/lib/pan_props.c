@@ -25,6 +25,7 @@
  */
 
 #include <fcntl.h>
+#include <unistd.h>
 #include <xf86drm.h>
 
 #include "util/u_math.h"
@@ -327,8 +328,16 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
         if (!dev->model)
                 return;
 
-        if (dev->debug & PAN_DBG_BO_LOG)
-                dev->bo_log = fopen("/tmp/bo_log", "w");
+        if (dev->debug & PAN_DBG_BO_LOG) {
+                char path[64];
+                snprintf(path, sizeof(path), "/tmp/bo_log.%ld", (long)getpid());
+                dev->bo_log = fopen(path, "a");
+                if (dev->bo_log) {
+                        fprintf(dev->bo_log, "device-open pid=%ld dev=%p\n",
+                                (long)getpid(), (void *)dev);
+                        fflush(dev->bo_log);
+                }
+        }
 
         dev->core_count = panfrost_query_core_count(dev, &dev->core_id_range);
         dev->thread_tls_alloc = panfrost_query_thread_tls_alloc(dev, dev->arch);
