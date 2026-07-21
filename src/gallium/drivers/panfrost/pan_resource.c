@@ -429,7 +429,13 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
         rsrc = pan_resource(cur);
         scanout = rsrc->scanout;
 
-        handle->modifier = rsrc->image.layout.modifier;
+        /* DRI3 queries an image's FD and modifier in separate calls.  The
+         * modifier query uses a KMS winsys handle even though the subsequent
+         * pixmap import uses the FD returned by the earlier query.  Preserve
+         * the AHardwareBuffer socket transport tag across both calls. */
+        handle->modifier = rsrc->tensor_ahb_id ?
+                           TENSOR_AHB_DRI3_MODIFIER :
+                           rsrc->image.layout.modifier;
         rsrc->modifier_constant = true;
 
         if (handle->type == WINSYS_HANDLE_TYPE_KMS && dev->ro) {
@@ -440,8 +446,10 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
                 int fd = tensor_ahb_present_fd(rsrc->tensor_ahb_id);
                 if (fd >= 0)
                         handle->modifier = TENSOR_AHB_DRI3_MODIFIER;
-                else
+                else {
+                        handle->modifier = rsrc->image.layout.modifier;
                         fd = panfrost_bo_export(rsrc->image.data.bo);
+                }
 
                 if (fd < 0)
                         return false;
@@ -454,6 +462,14 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
 
         handle->stride = panfrost_get_legacy_stride(&rsrc->image.layout, 0);
         handle->offset = rsrc->image.layout.slices[0].offset;
+        if (tensor_ahb_debug() && handle->type == WINSYS_HANDLE_TYPE_FD)
+                fprintf(stderr,
+                        "tensor-ahb: export resource=%p bind=0x%x usage=0x%x "
+                        "id=%u fd=%d modifier=%llu stride=%u offset=%u\n",
+                        (void *)rsrc, rsrc->base.bind, usage,
+                        rsrc->tensor_ahb_id, handle->handle,
+                        (unsigned long long)handle->modifier,
+                        handle->stride, handle->offset);
         return true;
 }
 
@@ -476,7 +492,9 @@ panfrost_resource_get_param(struct pipe_screen *pscreen,
                 *value = rsrc->image.layout.slices[level].offset;
                 return true;
         case PIPE_RESOURCE_PARAM_MODIFIER:
-                *value = rsrc->image.layout.modifier;
+                *value = rsrc->tensor_ahb_id ?
+                         TENSOR_AHB_DRI3_MODIFIER :
+                         rsrc->image.layout.modifier;
                 return true;
         case PIPE_RESOURCE_PARAM_NPLANES:
                 /* Panfrost doesn't directly support multi-planar formats,
@@ -1014,7 +1032,8 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                 int heap_fd;
 
                 int ahb_fd = -1;
-                if ((template->bind & PIPE_BIND_DISPLAY_TARGET) &&
+                if ((template->bind &
+                     (PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT)) &&
                     tensor_ahb_allocate(so, template, &ahb_fd)) {
                         so->image.data.bo = panfrost_bo_import(dev, ahb_fd);
                         bool cpu_mapped = so->image.data.bo &&

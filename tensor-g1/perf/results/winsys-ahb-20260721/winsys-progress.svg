@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="650" viewBox="0 0 1100 650">
+  <rect width="1100" height="650" rx="24" fill="#0f172a"/>
+  <g font-family="Inter,Arial,sans-serif" fill="#e2e8f0">
+    <text x="55" y="55" font-size="30" font-weight="700">Tensor G1 Plasma winsys progress</text>
+    <text x="55" y="84" font-size="16" fill="#94a3b8">Displayed cadence from Android SurfaceFlinger at 1080x2205</text>
+
+    <g font-size="17">
+      <text x="55" y="145">CPU presenter</text>
+      <rect x="285" y="121" width="158" height="32" rx="6" fill="#64748b"/>
+      <text x="455" y="144" font-weight="700">12.84 FPS</text>
+
+      <text x="55" y="201">Aligned raw DRI3</text>
+      <rect x="285" y="177" width="224" height="32" rx="6" fill="#f59e0b"/>
+      <text x="521" y="200" font-weight="700">18.17 FPS</text>
+
+      <text x="55" y="257">AHB initial</text>
+      <rect x="285" y="233" width="359" height="32" rx="6" fill="#22c55e"/>
+      <text x="656" y="256" font-weight="700">29.14 FPS</text>
+
+      <text x="55" y="313">AHB thermal status 2</text>
+      <rect x="285" y="289" width="334" height="32" rx="6" fill="#14b8a6"/>
+      <line x1="603" y1="285" x2="629" y2="285" stroke="#f8fafc" stroke-width="3"/>
+      <line x1="603" y1="280" x2="603" y2="290" stroke="#f8fafc" stroke-width="3"/>
+      <line x1="629" y1="280" x2="629" y2="290" stroke="#f8fafc" stroke-width="3"/>
+      <text x="644" y="312" font-weight="700">27.11 FPS median</text>
+
+      <text x="55" y="369">No compositor ceiling</text>
+      <rect x="285" y="345" width="757" height="32" rx="6" fill="#3b82f6"/>
+      <text x="905" y="368" font-weight="700">61.47 FPS</text>
+    </g>
+
+    <line x1="55" y1="420" x2="1045" y2="420" stroke="#334155"/>
+    <text x="55" y="462" font-size="21" font-weight="700">Probe tax caught and corrected</text>
+    <text x="55" y="503" font-size="17">Regex /proc scan every 250 ms</text>
+    <rect x="350" y="480" width="399" height="27" rx="5" fill="#ef4444"/>
+    <text x="765" y="501" font-size="17" font-weight="700">39.85% core</text>
+    <text x="55" y="552" font-size="17">Exact-PID controlled sampler</text>
+    <rect x="350" y="529" width="33" height="27" rx="5" fill="#22c55e"/>
+    <text x="399" y="550" font-size="17" font-weight="700">3.31% core</text>
+
+    <text x="55" y="611" font-size="15" fill="#94a3b8">Cool steady: 30.14-31.88 FPS. Thermal-2 soak: 25.81-27.91 FPS. 0 drops and 0 hardware faults.</text>
+  </g>
+</svg>

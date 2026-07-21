@@ -23,6 +23,14 @@ export KDE_SESSION_VERSION=5
 export QT_QPA_PLATFORM=xcb
 export QT_X11_NO_MITSHM=1
 
+# DrKonqi attaches to a crashed process and waits for desktop interaction. In
+# this ptrace-based PRoot session that can leave the failed process alive with
+# several threads spinning at 100% CPU. KCrash documents KDE_DEBUG as the
+# process-wide way to skip installing that crash handler. Preserve the normal
+# signal exit and the session log instead of thermally throttling on a hidden
+# crash dialog.
+export KDE_DEBUG="${KDE_DEBUG:-1}"
+
 # Application OpenGL remains accelerated by Panfrost when KWin compositing is
 # disabled. This is the practical default: compositing through the stable CPU
 # presenter adds another full-window render/copy and delivered only about

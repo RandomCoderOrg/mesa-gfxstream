@@ -1,0 +1,2 @@
+[100m> LOGIN jammy:raw[0m
+{"schema":"tensor-perf-v1","kind":"x11-window-motion","requested_frames":240,"target_fps":60,"compositor_owner":14680090,"hold_before_destroy_seconds":0.000,"elapsed_seconds":4.000436,"request_fps":59.993,"schedule_lateness_p50_ms":0.114,"schedule_lateness_p95_ms":0.156,"schedule_lateness_max_ms":0.300}

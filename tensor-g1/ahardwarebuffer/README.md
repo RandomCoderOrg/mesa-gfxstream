@@ -31,23 +31,30 @@ requests it.
 
 The broker pools up to 16 backing objects. Mesa resource destruction returns
 an object to that pool; compatible later allocations reuse the gralloc object
-while receiving a new protocol id. An abruptly killed client cannot send the
-release message, so restart the broker if all slots become stranded.
+while receiving a new protocol id. A Present worker waits at most five seconds
+for Termux:X11 to request the native handle, so a rejected or abandoned import
+cannot leak a detached worker indefinitely. The broker records the allocating
+Unix peer PID and reclaims an allocation once that process no longer exists.
+If 16 released buffers of incompatible dimensions fill the pool, the next
+allocation evicts one released entry instead of returning `ENOSPC`.
 
 ## Components
 
 | File | Runs in | Purpose |
 | --- | --- | --- |
 | `ahb-probe.c` | Termux/Bionic | Verify allocation, CPU mapping, DMA-BUF identity, and Unix-socket handle transfer |
+| `tensor-ahb-broker-probe.c` | Termux/Bionic | Abandon one Present handoff and verify bounded worker cleanup and pool release |
 | `tensor-ahb-service.c` | Termux/Bionic | Own, pool, export, present, and release `AHardwareBuffer` objects |
 | `../../src/gallium/drivers/panfrost/tensor_ahb_protocol.h` | Both ABIs | Versioned 40-byte broker protocol and private DRI3 modifier |
-| `patches/termux-x11-logical-ahb-size.patch` | Termux:X11 | Preserve the logical X pixmap height when the backing AHB has hidden padding rows |
-| `patches/termux-x11-xkbcomp-include.patch` | Termux:X11 build | Avoid the vendored X11 header shadowing libc headers in the tested native build |
+| `../termux-x11/tensor-g1-dri3.patch` | Termux:X11 | Complete DMA-heap, DRI3, aligned-stride, AHB modifier, logical-size, and build companion patch |
 
-Termux:X11 already implements private modifier `1255` and receives an
-`AHardwareBuffer` through the supplied socket. The first patch is still needed
-because Panfrost requires eight hidden allocation rows: exposing the physical
-height as the X pixmap height produces a visible strip at the bottom.
+Modifier `1255` is a private socket transport tag, not a physical GPU memory
+layout. The companion patch advertises that transport from both DRI3 modifier
+queries. Panfrost still renders a linear image, but returns `1255` for the
+separate loader modifier query when the image is broker-backed. Termux:X11
+then requests the complete native handle instead of interpreting the socket fd
+as a raw DMA-BUF. It preserves the logical pixmap height while retaining the
+eight hidden physical rows needed by the Panfrost allocation.
 
 ## Build and run in Termux
 
@@ -63,9 +70,15 @@ clang --target=aarch64-linux-android28 -std=c11 -O2 -Wall -Wextra \
   tensor-g1/ahardwarebuffer/tensor-ahb-service.c \
   -landroid -ldl -pthread -o tensor-ahb-service
 
+clang --target=aarch64-linux-android28 -std=c11 -O2 -Wall -Wextra \
+  -Isrc/gallium/drivers/panfrost \
+  tensor-g1/ahardwarebuffer/tensor-ahb-broker-probe.c \
+  -o tensor-ahb-broker-probe
+
 ./ahb-probe
 nohup ./tensor-ahb-service "$PREFIX/tmp/tensor-ahb.sock" \
   >tensor-ahb-service.log 2>&1 </dev/null &
+./tensor-ahb-broker-probe "$PREFIX/tmp/tensor-ahb.sock"
 ```
 
 Apply the Termux:X11 fixes to a checkout matching the tested July 2026
@@ -73,9 +86,7 @@ Apply the Termux:X11 fixes to a checkout matching the tested July 2026
 
 ```sh
 git -C /path/to/termux-x11 apply \
-  /path/to/tensor-g1-proot-gpu/tensor-g1/ahardwarebuffer/patches/termux-x11-logical-ahb-size.patch
-git -C /path/to/termux-x11 apply \
-  /path/to/tensor-g1-proot-gpu/tensor-g1/ahardwarebuffer/patches/termux-x11-xkbcomp-include.patch
+  /path/to/tensor-g1-proot-gpu/tensor-g1/termux-x11/tensor-g1-dri3.patch
 ```
 
 ## Enable in Jammy
@@ -110,6 +121,19 @@ path from `tensor-ahb: Mesa allocation` in the application log and
 - Panfrost imports the data DMA-BUF through `/dev/mali0` and renders directly
   into it.
 - Termux:X11 accepts the brokered native handle through modifier `1255`.
+- All 33 tested widths from 960 through 1040 completed allocation, Kbase
+  import, DRI3 import, Present, destruction, and pool reuse without a GPU
+  fault or raw-fd fallback.
+- Full Plasma compositing is visible and stable through this route. A matched
+  motion run improved SurfaceFlinger cadence from 18.17 FPS on aligned raw
+  DRI3 to 29.14 FPS on AHB and reduced KWin plus Plasma CPU from 0.815 to
+  0.771 cores. The controlled thermal-status-2 soak delivered a 27.11 FPS
+  median with zero SurfaceFlinger drops.
+- The abandoned-Present probe observed broker cleanup after 5003 ms and then
+  successfully returned the allocation to the pool.
+- The lifecycle probe deliberately exited without releasing an allocation;
+  the next request reclaimed its dead owner. Seventeen distinct released sizes
+  also forced safe pool eviction instead of `ENOSPC`.
 - The logical-height Termux:X11 patch hides the eight physical padding rows.
 - A six-second, approximately 60 FPS glxgears capture and a clean X-server
   restart showed moving red, green, and blue gears without the old wrong-color
@@ -149,3 +173,6 @@ whole desktop frame.
 - There is no explicit Android fence carried from the broker into Kbase or
   from MediaCodec into Firefox. The tested paths rely on current implicit
   synchronization and DMA-BUF CPU access epochs.
+- Dead-owner reclamation relies on the Unix peer PID remaining meaningful in
+  the Android PID namespace. PID reuse can delay reclamation until a later
+  allocation, but cannot make a live slot eligible for pooled eviction.

@@ -353,34 +353,48 @@ tensor-g1/desktop/start-plasma-x11
 
 Disabling the Plasma screen locker is necessary in PRoot because there is no
 real login/resume session to unlock it. The Plasma wrapper supplies both D-Bus
-layers. Its practical default disables KWin compositing while applications
-continue to render on Mali-G78 through Panfrost. This avoids a second
-full-window render and CPU-present copy on every desktop update. To retain
-Plasma's shadows, transparency, and other compositor effects for diagnostics,
-start it explicitly with:
+layers. It also sets `KDE_DEBUG=1`, the documented
+[KCrash handler opt-out](https://api.kde.org/kcrash.html), so DrKonqi cannot
+keep a failed ptrace-traced process alive and spinning under PRoot; crashes still
+terminate by signal and remain visible in the session log. `KWIN_COMPOSE=N`
+remains a useful uncomposited ceiling measurement. To
+run the complete desktop compositor through the accelerated AHardwareBuffer
+winsys, start it explicitly with:
 
 ```sh
-KWIN_COMPOSE=O2 tensor-g1/desktop/start-plasma-x11
+PAN_MALI_X11_DRI3=1 PAN_MALI_X11_AHB=1 KWIN_COMPOSE=O2 \
+  tensor-g1/desktop/start-plasma-x11
 ```
 
-In five controlled 120-move runs, Android SurfaceFlinger measured a 61.47 FPS
-median without KWin compositing versus 12.84 FPS with the stable synchronised
-CPU presenter, while combined KWin, Plasma, and Termux:X11 CPU use fell about
-21%. The CPU `batchsync` candidate reached only 14.15 FPS and was noisy.
-Enabling the DMA-BUF/DRI3 presenter for KWin is not yet viable: both `sync` and
-`batchsync` candidates terminate KWin with `SIGBUS` while handling an imported
-display target. See the [raw comparison and graph](perf/results/plasma-motion-20260720/comparison.md)
+The original baseline measured 61.47 FPS without KWin compositing versus
+12.84 FPS through the synchronized CPU presenter. Producer-side 64-byte stride
+alignment made raw DMA-BUF DRI3 compositing stable at 18.17 FPS. The completed
+AHardwareBuffer transport then reached 29.14 FPS in the matched run (+60.4%
+over raw DRI3) while reducing combined KWin plus Plasma CPU from 0.815 to
+0.771 cores. A later five-run soak at Android thermal status 2 delivered a
+27.11 FPS median with zero SurfaceFlinger drops and no GPU fault. See the
+[current graph and evidence](perf/results/winsys-ahb-20260721/comparison.md)
 and the [repeatable motion probe](perf/x11-window-motion.c).
 
-The compositor crash is now isolated to imported regular textures whose row
+The 61.47 FPS number is an uncomposited ceiling rather than a KWin performance
+target with identical work. KWin adds a full-scene Panfrost render, after which
+the reliable Termux:X11 route GPU-copies the compositor AHB into the root
+buffer and draws that root again into Android's EGL surface. Cool-state results
+near 30--32 FPS, despite similar process CPU, point to serialized fences or a
+missed-every-other-vblank cadence. Termux:X11 also currently rejects direct
+flip by comparing the root width with both incoming pixmap dimensions. The
+obvious height fix remains gated on a bounded AHB flip test covering pixel
+correctness, ownership, release ordering, resize, and orientation.
+
+The former compositor crash was isolated to imported regular textures whose row
 stride is not a multiple of 64 bytes. A minimal 2240-pixel ARGB surface with an
 8960-byte stride passes, while changing only the width to 2248 pixels and the
 stride to 8992 bytes reproduces fragment-job event `0x5b`. Plasma's full-screen
-ARGB source has the same incompatible alignment. See the
+ARGB source had the same incompatible alignment. FD-backed Termux:X11 pixmaps
+now allocate padded strides and copy regular sources between their real source
+and aligned destination layouts; foreign raw-FD imports are unchanged. See the
 [stride comparison and graph](perf/results/argb-stride-20260720/comparison.md)
-and [minimal reproducer](perf/x11-argb-surface.c). The current practical Plasma
-default therefore remains uncomposited while an aligned staging path is
-developed for incompatible imports.
+and [minimal reproducer](perf/x11-argb-surface.c).
 
 Termux:X11 is a separate project, so its tested DMA-heap, DRI3 export, pixmap
 conversion, and buffer-release changes are stored as a
@@ -545,6 +559,12 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
   YouTube run it raised Firefox's observed Present rate from 3.8/s to 17.4/s,
   while dropped frames improved from 88.2% to 49.6%. This is a meaningful
   presentation improvement, not a claim of smooth playback.
+- Termux:X11 advertises the private AHardwareBuffer socket modifier through
+  both DRI3 modifier callbacks, and Panfrost preserves it across the loader's
+  separate FD and modifier queries. The 33-width lifecycle matrix passed
+  33/33 without raw fallback or a GPU fault. Full Plasma compositing is visible
+  at 1080x2205; the matched window-motion run reached 29.14 FPS versus 18.17
+  FPS on aligned raw DRI3.
 - Android MediaCodec selected `c2.exynos.h264.decoder`; the native decoder,
   Unix-socket bridge, and Jammy GStreamer `tensorh264dec` element each decoded
   all 120 frames of the 1920x1080 60 FPS smoke stream. The GStreamer element
@@ -578,13 +598,19 @@ Panfrost while GStreamer selected `tensorh264dec` and Android selected
   Firefox Present comparison, but Mutter plus final X11 composition still
   drops about half the frames of a 360p stream. Strict no-copy Present
   (`PAN_MALI_X11_DRI3_ZERO_COPY=1`) negotiates successfully but produces an
-  invisible window under the tested GNOME/Mutter session.
+  invisible window under the tested GNOME/Mutter session. Termux:X11's current
+  direct-flip eligibility test also compares root width against pixmap height,
+  rejecting non-square full-screen buffers; changing that condition alone is
+  unsafe until release fencing and transition behavior pass the focused flip
+  probe.
 - Mutter exits with `SIGBUS` if GNOME Shell's own display targets use the AHB
   route. Keep GNOME on `PAN_MALI_X11_DRI3=0` and opt individual clients into
   AHB until imported-buffer CPU mapping is fixed.
-- G78 AFBC is disabled; swap control is deferred; resizing, suspend/resume,
-  multisampling, audio integration, input devices, long stability runs, and a
-  complete desktop session remain incomplete.
+- G78 AFBC is disabled; swap control is deferred; resizing, orientation and
+  suspend/resume transitions, multisampling, audio integration, input devices,
+  and longer stability runs remain incomplete. A full Plasma session now runs
+  through the AHardwareBuffer compositor path, but it is not yet a general
+  desktop-support claim.
 - `MESA-LOADER: failed to retrieve device information` is expected because
   `/dev/mali0` is Kbase, not a DRM render node.
 - The MediaCodec bridge is H.264-only. GStreamer still receives decoded NV12

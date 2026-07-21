@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="420" viewBox="0 0 980 420">
+  <rect width="980" height="420" rx="22" fill="#f8fafc"/>
+  <g font-family="Inter,Arial,sans-serif" fill="#172033">
+    <text x="48" y="56" font-size="28" font-weight="700">Idle Plasma CPU: hidden crash process found</text>
+    <text x="48" y="84" font-size="15" fill="#64748b">15-second exact-PID samples; lower is better</text>
+
+    <text x="48" y="151" font-size="18">DrKonqi-held failed shell</text>
+    <rect x="310" y="124" width="603" height="38" rx="7" fill="#ef4444"/>
+    <text x="790" y="150" font-size="19" fill="#ffffff" font-weight="700">4.02 cores</text>
+
+    <text x="48" y="225" font-size="18">Live KWin + replacement shell</text>
+    <rect x="310" y="198" width="33" height="38" rx="7" fill="#22c55e"/>
+    <text x="359" y="224" font-size="19" font-weight="700">0.219 cores</text>
+
+    <line x1="48" y1="278" x2="932" y2="278" stroke="#cbd5e1"/>
+    <text x="48" y="323" font-size="24" font-weight="700" fill="#15803d">94.6% idle CPU removed</text>
+    <text x="48" y="354" font-size="16" fill="#475569">KDE_DEBUG=1 now disables DrKonqi attachment in the PRoot Plasma launcher.</text>
+    <text x="48" y="382" font-size="14" fill="#64748b">The replacement shell and KWin remained alive; Termux and Termux:X11 were not restarted.</text>
+  </g>
+</svg>

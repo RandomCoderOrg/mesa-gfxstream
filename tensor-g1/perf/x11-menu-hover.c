@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <X11/Xlib.h>
+#include <X11/keysym.h>
 
 #include <math.h>
 #include <stdbool.h>
@@ -11,6 +12,7 @@
 /* Keep this probe buildable with the runtime libXtst package alone. Ubuntu's
  * minimal PRoot does not install the development header or unversioned link. */
 extern int XTestFakeButtonEvent(Display *, unsigned int, Bool, unsigned long);
+extern int XTestFakeKeyEvent(Display *, unsigned int, Bool, unsigned long);
 extern int XTestFakeMotionEvent(Display *, int, int, int, unsigned long);
 
 static void
@@ -23,6 +25,17 @@ sleep_ns(long nanoseconds)
 
    while (nanosleep(&delay, &delay) != 0)
       ;
+}
+
+static void
+dismiss_menu(Display *display)
+{
+   KeyCode escape = XKeysymToKeycode(display, XK_Escape);
+   if (!escape)
+      return;
+   XTestFakeKeyEvent(display, escape, True, CurrentTime);
+   XTestFakeKeyEvent(display, escape, False, CurrentTime);
+   XSync(display, False);
 }
 
 int
@@ -47,6 +60,10 @@ main(int argc, char **argv)
    const int launcher_x = 52;
    const int launcher_y = height - 24;
 
+   /* Make repetitions independent even if an interrupted earlier run left a
+    * launcher, submenu, or context menu open. */
+   dismiss_menu(display);
+   sleep_ns(100000000L);
    XTestFakeMotionEvent(display, screen, launcher_x, launcher_y, CurrentTime);
    XTestFakeButtonEvent(display, 1, True, CurrentTime);
    XTestFakeButtonEvent(display, 1, False, CurrentTime);
@@ -74,6 +91,7 @@ main(int argc, char **argv)
           "\"requested_frames\":%u,\"target_fps\":%d,"
           "\"display_width\":%d,\"display_height\":%d}\n",
           frames, fps, width, height);
+   dismiss_menu(display);
    XCloseDisplay(display);
    return 0;
 }

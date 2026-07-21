@@ -101,9 +101,10 @@ def matching_pids(pattern: re.Pattern[str] | None, fixed: set[int]) -> set[int]:
             continue
         if int(entry.name) == os.getpid():
             continue
-        stat = read_text(entry / "stat")
-        cmdline = read_text(entry / "cmdline")
-        haystack = (stat or "") + " " + (cmdline or "").replace("\0", " ")
+        cmdline = (read_text(entry / "cmdline") or "").replace("\0", " ")
+        haystack = cmdline
+        if not haystack:
+            haystack = read_text(entry / "comm") or ""
         if pattern.search(haystack):
             result.add(int(entry.name))
     return result
@@ -132,6 +133,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=False, default="-")
     parser.add_argument("--interval-ms", type=int, default=250)
+    parser.add_argument(
+        "--rescan-interval-ms", type=int, default=5000,
+        help="refresh --match PID discovery at this interval (default: 5000)",
+    )
     parser.add_argument("--duration", type=float, default=15.0)
     parser.add_argument("--pid", type=int, action="append", default=[])
     parser.add_argument("--match", help="regular expression matched against comm/cmdline")
@@ -143,6 +148,8 @@ def main() -> int:
         return self_test()
     if args.interval_ms < 50:
         parser.error("--interval-ms must be at least 50 to bound observer cost")
+    if args.rescan_interval_ms < args.interval_ms:
+        parser.error("--rescan-interval-ms must be at least --interval-ms")
     if args.duration <= 0:
         parser.error("--duration must be positive")
 
@@ -161,6 +168,8 @@ def main() -> int:
     deadline_ns = started_ns + int(args.duration * 1_000_000_000)
     sampler_cpu_start = time.process_time_ns()
     stopped = False
+    dynamic_pids: set[int] = set()
+    next_rescan_ns = 0
 
     def stop(_signum: int, _frame: object) -> None:
         nonlocal stopped
@@ -172,7 +181,12 @@ def main() -> int:
     try:
         while not stopped and time.monotonic_ns() < deadline_ns:
             loop_started = time.monotonic_ns()
-            for pid in sorted(matching_pids(pattern, fixed)):
+            if pattern is not None and loop_started >= next_rescan_ns:
+                dynamic_pids = matching_pids(pattern, set())
+                next_rescan_ns = (
+                    loop_started + args.rescan_interval_ms * 1_000_000
+                )
+            for pid in sorted(fixed | dynamic_pids):
                 record = snapshot(
                     pid, loop_started, page_size, clock_ticks, run_id
                 )
@@ -194,6 +208,7 @@ def main() -> int:
             "sampler_cpu_ns": time.process_time_ns() - sampler_cpu_start,
             "samples": samples,
             "interval_ms": args.interval_ms,
+            "rescan_interval_ms": args.rescan_interval_ms,
         }
         output.write(json.dumps(summary, separators=(",", ":")) + "\n")
         if output is not sys.stdout:

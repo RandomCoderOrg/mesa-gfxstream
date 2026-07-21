@@ -26,7 +26,7 @@ The machine-readable layer and promotion order live in
 media, changes multiple knobs, lacks a warm-up, or was captured while the phone
 was serving a latency-sensitive hotspot workload.
 
-## Current progress: 2026-07-20
+## Current progress: 2026-07-21
 
 These graphs are the current promotion checkpoint, not a final benchmark. They
 record one controlled real-world sequence after component correctness passed;
@@ -55,6 +55,48 @@ fence switch as the dominant cause. The next structural experiment is direct
 MediaCodec surface/AHardwareBuffer output, eliminating the remaining per-frame
 NV12 CPU copy. Thermal state must be captured with every future desktop run.
 
+### AHardwareBuffer compositor winsys
+
+![Tensor G1 Plasma winsys progress](results/winsys-ahb-20260721/winsys-progress.svg)
+
+The missing DRI3 contract was a split loader query: Mesa exported the broker
+socket fd, but its separate resource-modifier query returned the underlying
+linear layout (`0`). Termux:X11 consequently treated the socket as a raw
+DMA-BUF. Broker-backed Panfrost resources now return the private transport
+modifier `1255` from both query paths, while raw fallback explicitly restores
+the physical linear modifier. Termux:X11 advertises the same transport from
+its screen and drawable modifier callbacks.
+
+The full path now allocates Plasma display targets as Android
+`AHardwareBuffer`, imports their data DMA-BUF into Kbase, renders on Mali-G78,
+passes the native handle through the broker socket, and GPU-copies it into the
+Termux:X11 Android surface. A matched motion run reached 29.14 FPS versus
+18.17 FPS on aligned raw DRI3 (+60.4%) while KWin plus Plasma CPU fell from
+0.815 to 0.771 cores. A five-run soak captured after Android reached thermal
+status 2 delivered a 27.11 FPS median (25.81-27.91), zero SurfaceFlinger drops,
+and no GPU fault.
+
+After the stale crash process was removed and Android cooled to status 1, the
+warm-up sequence rose from 24.54 to 30.99 FPS. Two subsequent steady runs
+delivered 31.88 and 30.14 FPS; the third fell to 22.53 exactly as Android
+crossed to status 2, and the thermal gate stopped the rest. This is useful
+cool-state and transition evidence, but not a five-run cool median.
+
+The first soak also caught observer distortion: regex PID discovery scanned
+all of `/proc` every 250 ms and cost 39.85% of one core. Discovery is now
+cached for five seconds, and exact-PID measurements cost a 3.31% median. Full
+raw evidence, screenshot, correction note, and graph are in
+[`results/winsys-ahb-20260721/`](results/winsys-ahb-20260721/).
+
+An idle audit found a separate PRoot failure mode: after plasmashell aborted,
+DrKonqi restarted it but kept the failed PID traced and alive. Four stale
+threads each consumed a full core. Removing only the failed PID reduced idle
+KWin plus plasmashell use from 4.02 to 0.219 cores. The Plasma launcher now
+sets `KDE_DEBUG=1`, the documented KCrash opt-out, so future crashes exit and
+remain visible in the session log instead of becoming a hidden thermal load.
+
+![Idle CPU before and after stale crash cleanup](results/winsys-ahb-20260721/idle-cpu.svg)
+
 ### Plasma window motion
 
 ![Plasma window motion delivered through Termux:X11](results/plasma-motion-20260720/window-motion-fps.svg)
@@ -68,12 +110,28 @@ than the baseline's status 1. Application OpenGL remained direct, accelerated,
 and reported `Mali-G78 (Panfrost)`.
 
 The CPU `batchsync` experiment was not a useful breakthrough (14.15 FPS median,
-0.801 cores). Both DMA-BUF/DRI3 KWin candidates failed with `SIGBUS`; therefore
-the next compositor task is imported display-target correctness, not more sync
-tuning. Until then, `KWIN_COMPOSE=N` is the responsive Plasma default and
-`KWIN_COMPOSE=O2` is an explicit diagnostic mode. The full five-run artifacts
-and generated report are in
+0.801 cores). At that checkpoint both DMA-BUF/DRI3 candidates failed with
+`SIGBUS`; the later aligned-stride and AHardwareBuffer work above fixed that
+compositor path. `KWIN_COMPOSE=N` remains the useful upper-bound diagnostic,
+while `KWIN_COMPOSE=O2` now exercises the working accelerated winsys. The old
+five-run artifacts and generated report are in
 [`results/plasma-motion-20260720/`](results/plasma-motion-20260720/).
+
+The remaining gap is primarily a pipeline difference, not simply KWin's idle
+CPU cost. With compositing, Panfrost renders KWin's full scene into an AHB,
+Termux:X11 GPU-copies that Present source into the root buffer, and its Android
+renderer draws the root again before `eglSwapBuffers`. The current renderer
+waits for GPU completion before releasing the X side and performs another
+post-swap fence wait. Cool AHB motion settling near 30--32 FPS versus the
+61.47 FPS ceiling is consistent with missing every second display deadline.
+
+Direct flip is currently rejected even for a correctly sized full-screen
+pixmap because Termux:X11's `loriePresentFlip` compares `root.width` against
+both pixmap dimensions. Do not promote the obvious height-comparison change
+directly to Plasma: first use a full-screen AHB probe to validate pixels,
+buffer reuse, Idle/Complete ordering, resize, and orientation. Capture stage
+times around compositor render, Present, the server GPU copy, its fence wait,
+and Android swap so a removed copy is not confused with a shifted stall.
 
 Build the deterministic checkerboard window in the PRoot and analyze a result
 directory on the development machine:
@@ -138,11 +196,10 @@ format, row stride, allocation size, computed layout size, and GPU address.
 The raw minimal evidence and comparison are in
 [`results/argb-stride-20260720/`](results/argb-stride-20260720/).
 
-The safe next experiment is an aligned staging resource for incompatible X
-pixmaps. Merely rounding the descriptor stride would make it disagree with the
-tightly packed source and is not valid. A selective staging path keeps aligned
-video and ordinary application buffers on the direct route instead of forcing
-the whole desktop back through CPU presentation.
+The implemented fix aligns FD-backed pixmaps at the Termux:X11 producer and
+copies regular pixmaps from their real source stride into the padded
+destination stride. Foreign imported raw FDs remain untouched. The separate
+AHardwareBuffer path avoids this raw upload for compositor display targets.
 
 ### Termux:X11 lifecycle fixes
 
@@ -151,9 +208,8 @@ The companion X-server patch is preserved under
 conversion fixed repeated texture-from-pixmap updates. Synchronizing an FD
 buffer before its final unmap and close fixed the separate composited-window
 destroy fault: ten rapid lifecycle runs and twelve repeated update runs passed.
-The release synchronization generally cost about 0.19--0.31 ms. These fixes
-make the lifecycle tests reliable; they do not relax the imported-texture
-stride requirement above.
+The release synchronization generally cost about 0.19--0.31 ms. Producer-side
+stride alignment then completed a 33-width lifecycle matrix without a fault.
 
 `firefox-loop-player.html` now separates `displayed_fps`, derived from
 `VideoPlaybackQuality`, from `presented_fps`, the main-thread
@@ -344,6 +400,13 @@ The artifact contains raw CPU ticks, RSS, I/O, thread count, and voluntary and
 involuntary context switches. The final record reports the sampler's own CPU
 cost. A run with excessive observer cost can therefore be rejected rather than
 trusted.
+
+Prefer exact `--pid` arguments for a fixed compositor benchmark. When dynamic
+`--match` discovery is required, matching PIDs are cached and `/proc` is
+rescanned every five seconds by default; change that with
+`--rescan-interval-ms`. The old scan-on-every-sample behavior consumed 39.85%
+of one core under PRoot in the Plasma soak, while exact-PID sampling consumed
+3.31%.
 
 Summarize one run or compare a candidate with a baseline on the Mac:
 

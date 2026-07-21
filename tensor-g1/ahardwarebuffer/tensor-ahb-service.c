@@ -14,6 +14,8 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/dma-buf.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -23,11 +25,13 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #define TENSOR_AHB_MAX_BUFFERS 16
 #define TENSOR_AHB_PADDING_ROWS 8
+#define TENSOR_AHB_PRESENT_TIMEOUT_MS 5000
 
 struct tensor_native_handle {
    int version;
@@ -42,6 +46,7 @@ typedef const struct tensor_native_handle *
 struct tensor_ahb_buffer {
    bool used;
    uint32_t id;
+   pid_t owner_pid;
    AHardwareBuffer *buffer;
    uint32_t width;
    uint32_t height;
@@ -53,12 +58,24 @@ struct tensor_ahb_buffer {
 struct present_worker {
    AHardwareBuffer *buffer;
    int socket_fd;
+   uint32_t id;
 };
 
 static struct tensor_ahb_buffer buffers[TENSOR_AHB_MAX_BUFFERS];
 static pthread_mutex_t buffers_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t next_id = 1;
 static get_native_handle_fn get_native_handle;
+
+static int
+sync_dma_buf(int fd, uint64_t flags)
+{
+   struct dma_buf_sync sync = {.flags = flags};
+   int result;
+   do {
+      result = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+   } while (result < 0 && errno == EINTR);
+   return result;
+}
 
 static int
 send_message(int socket_fd, const struct tensor_ahb_message *message,
@@ -135,21 +152,76 @@ find_buffer(uint32_t id)
    return NULL;
 }
 
+static void
+discard_buffer(struct tensor_ahb_buffer *entry)
+{
+   if (entry->buffer)
+      AHardwareBuffer_release(entry->buffer);
+   memset(entry, 0, sizeof(*entry));
+}
+
+static void
+reclaim_dead_owners(void)
+{
+   for (unsigned i = 0; i < TENSOR_AHB_MAX_BUFFERS; i++) {
+      struct tensor_ahb_buffer *entry = &buffers[i];
+      if (!entry->used || entry->owner_pid <= 0)
+         continue;
+      if (kill(entry->owner_pid, 0) < 0 && errno == ESRCH) {
+         fprintf(stderr, "tensor-ahb: reclaimed dead owner pid=%d id=%u\n",
+                 entry->owner_pid, entry->id);
+         discard_buffer(entry);
+      }
+   }
+}
+
 static void *
 present_main(void *data)
 {
    struct present_worker *worker = data;
    uint8_t request;
-   ssize_t result;
+   struct pollfd poll_fd = {
+      .fd = worker->socket_fd,
+      .events = POLLIN,
+   };
+   int poll_result;
 
    do {
-      result = read(worker->socket_fd, &request, sizeof(request));
-   } while (result < 0 && errno == EINTR);
+      poll_result = poll(&poll_fd, 1, TENSOR_AHB_PRESENT_TIMEOUT_MS);
+   } while (poll_result < 0 && errno == EINTR);
+
+   ssize_t result = 0;
+   if (poll_result > 0) {
+      do {
+         result = read(worker->socket_fd, &request, sizeof(request));
+      } while (result < 0 && errno == EINTR);
+   } else if (poll_result == 0) {
+      fprintf(stderr, "tensor-ahb: present timeout id=%u after %d ms\n",
+              worker->id, TENSOR_AHB_PRESENT_TIMEOUT_MS);
+   } else {
+      fprintf(stderr, "tensor-ahb: present poll failed id=%u: %s\n",
+              worker->id, strerror(errno));
+   }
+
    if (result == 1) {
+      const struct tensor_native_handle *handle =
+         get_native_handle(worker->buffer);
+      if (!handle || handle->num_fds < 1 ||
+          sync_dma_buf(handle->data[0], DMA_BUF_SYNC_START |
+                                         DMA_BUF_SYNC_READ |
+                                         DMA_BUF_SYNC_WRITE) < 0 ||
+          sync_dma_buf(handle->data[0], DMA_BUF_SYNC_END |
+                                         DMA_BUF_SYNC_READ |
+                                         DMA_BUF_SYNC_WRITE) < 0) {
+         fprintf(stderr, "tensor-ahb: present sync failed: %s\n",
+                 strerror(errno));
+      }
       int status = AHardwareBuffer_sendHandleToUnixSocket(worker->buffer,
                                                            worker->socket_fd);
       if (status)
          fprintf(stderr, "tensor-ahb: handle send failed: %d\n", status);
+      else
+         fprintf(stderr, "tensor-ahb: presented id=%u\n", worker->id);
    }
 
    close(worker->socket_fd);
@@ -159,7 +231,7 @@ present_main(void *data)
 }
 
 static int
-handle_allocate(const struct tensor_ahb_message *request,
+handle_allocate(const struct tensor_ahb_message *request, pid_t owner_pid,
                 struct tensor_ahb_message *response, int *response_fd)
 {
    if (!request->width || !request->height || request->width > 8192 ||
@@ -168,6 +240,7 @@ handle_allocate(const struct tensor_ahb_message *request,
 
    uint32_t format = request->format ? request->format : 5;
    pthread_mutex_lock(&buffers_mutex);
+   reclaim_dead_owners();
    struct tensor_ahb_buffer *slot = NULL;
    for (unsigned i = 0; i < TENSOR_AHB_MAX_BUFFERS; i++) {
       if (!buffers[i].used && buffers[i].buffer &&
@@ -187,6 +260,19 @@ handle_allocate(const struct tensor_ahb_message *request,
       }
    }
    if (!slot) {
+      for (unsigned i = 0; i < TENSOR_AHB_MAX_BUFFERS; i++) {
+         if (!buffers[i].used) {
+            slot = &buffers[i];
+            fprintf(stderr,
+                    "tensor-ahb: evicted pooled %ux%u format=%u for %ux%u\n",
+                    slot->width, slot->height, slot->format,
+                    request->width, request->height);
+            discard_buffer(slot);
+            break;
+         }
+      }
+   }
+   if (!slot) {
       pthread_mutex_unlock(&buffers_mutex);
       return ENOSPC;
    }
@@ -195,6 +281,7 @@ handle_allocate(const struct tensor_ahb_message *request,
    if (recycled) {
       slot->used = true;
       slot->id = next_id++;
+      slot->owner_pid = owner_pid;
       if (!next_id)
          next_id = 1;
    }
@@ -274,6 +361,7 @@ handle_allocate(const struct tensor_ahb_message *request,
    pthread_mutex_lock(&buffers_mutex);
    slot->used = true;
    slot->id = next_id++;
+   slot->owner_pid = owner_pid;
    if (!next_id)
       next_id = 1;
    slot->buffer = buffer;
@@ -323,6 +411,7 @@ handle_present(const struct tensor_ahb_message *request, int received_fd)
    }
 
    worker->socket_fd = received_fd;
+   worker->id = request->id;
    pthread_t thread;
    int status = pthread_create(&thread, NULL, present_main, worker);
    if (status) {
@@ -331,6 +420,7 @@ handle_present(const struct tensor_ahb_message *request, int received_fd)
       return status;
    }
    pthread_detach(thread);
+   fprintf(stderr, "tensor-ahb: present ready id=%u\n", request->id);
    return 0;
 }
 
@@ -342,6 +432,7 @@ handle_release(const struct tensor_ahb_message *request)
    if (entry) {
       entry->used = false;
       entry->id = 0;
+      entry->owner_pid = 0;
    }
    pthread_mutex_unlock(&buffers_mutex);
 
@@ -365,13 +456,20 @@ serve_client(int client)
       .type = TENSOR_AHB_RESPONSE,
    };
    int response_fd = -1;
+   struct ucred credentials = {0};
+   socklen_t credentials_size = sizeof(credentials);
+   pid_t peer_pid = 0;
+   if (!getsockopt(client, SOL_SOCKET, SO_PEERCRED, &credentials,
+                   &credentials_size))
+      peer_pid = credentials.pid;
    if (request.magic != TENSOR_AHB_MAGIC ||
        request.version != TENSOR_AHB_VERSION) {
       response.status = EPROTO;
    } else {
       switch (request.type) {
       case TENSOR_AHB_ALLOCATE:
-         response.status = handle_allocate(&request, &response, &response_fd);
+         response.status = handle_allocate(&request, peer_pid, &response,
+                                           &response_fd);
          break;
       case TENSOR_AHB_PRESENT:
          response.status = handle_present(&request, received_fd);
