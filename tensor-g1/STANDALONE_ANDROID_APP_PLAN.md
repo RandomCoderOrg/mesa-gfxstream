@@ -1,14 +1,23 @@
-# Standalone Tensor Linux Android app plan
+# Standalone uDroid Android app plan
 
 Status: architecture and implementation plan
 Date: 2026-07-20
-Initial hardware target: Google Tensor G1 / Pixel 6 and Pixel 6a
-Working name: **Tensor Linux** (placeholder only)
+Product scope corrected: 2026-07-24
+Product: **uDroid**
+
+> **Scope correction:** This is the general Android application for uDroid:
+> users install, boot, manage, and interact with Linux distributions through a
+> proper Android UX. Google Tensor G1/Panfrost is only an optional experimental
+> hardware profile. It is not a compatibility requirement, product identity,
+> or dependency of the core app. Active implementation lives in the separate
+> `udroid-android` repository; `docs/PRODUCT_SCOPE.md` there supersedes any
+> Tensor-first wording that remains in this research-era plan.
 
 ## 1. Product decision
 
-Build one Android application that contains the Termux-derived runtime, the
-Termux:X11-derived display backend, and the Tensor G1 graphics/media bridges.
+Build one Android application that contains the uDroid/PRoot runtime and an
+optional Termux:X11-derived display backend. Device-specific graphics/media
+bridges are installable profiles, not core requirements.
 Keep the X server, Linux runtime, and Android renderer isolated in separate
 processes, but place them under one APK, one Android UID, one supervisor, and
 one user-facing lifecycle.
