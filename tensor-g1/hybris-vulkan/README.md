@@ -176,6 +176,34 @@ tensor-vulkan-run vkcube
 tensor-vulkan-run vkcube --present_mode 0
 ```
 
+The installed Ginkage path remains the default. Backend selection is explicit
+and affects only the launched process tree:
+
+```sh
+# Stable baseline
+TENSOR_VK_BACKEND=ginkage TENSOR_VK_WSI_MODE=copy tensor-vulkan-run vkcube
+
+# Isolated AHardwareBuffer oracle after running build-xmem-ahb-oracle.sh
+TENSOR_VK_BACKEND=xmem-ahb TENSOR_VK_WSI_MODE=ahb tensor-vulkan-run vkcube
+```
+
+`xmem-ahb` uses a uniquely named explicit Vulkan layer and disables the
+installed Ginkage implicit layer for that process. It stops with an unavailable
+error if the isolated layer, manifest, or AHB wrapper is missing; it never
+silently falls back to Ginkage or software rendering. Set `TENSOR_VK_TRACE=1`
+to print the resolved renderer, WSI, and layer directory before launch.
+
+Build the xMeM oracle only from the pinned source revision using:
+
+```sh
+./build-xmem-ahb-oracle.sh
+```
+
+The script installs the AHB wrapper and xMeM WSI into separate prefixes under
+`/root/hybris-rootless`. It does not replace the system WSI manifest. Run the
+standalone `ahb-probe` first; promote to `vkcube` only when every allocation,
+socket transfer, receiver-lifetime, stride, fence, and hash case passes.
+
 The default `TENSOR_VK_WSI_MODE=copy` uses a DRI3 DMA-BUF pixmap followed by a
 Termux:X11 server-side GPU copy. It was the fastest and most consistent mode in
 the initial Tensor G1 measurements. The alternatives are:

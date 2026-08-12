@@ -1,0 +1,30 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 96af204..9562a5d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -241,6 +241,11 @@ else()
+ endif()
+ 
+ # X11 WSI
++set(ANDROID_HEADERS_INCLUDE_DIR "" CACHE PATH
++   "Parent include directory containing android/hardware_buffer.h")
++if(BUILD_WSI_X11 AND ANDROID_HEADERS_INCLUDE_DIR STREQUAL "")
++   message(FATAL_ERROR "ANDROID_HEADERS_INCLUDE_DIR is required for X11 AHardwareBuffer WSI")
++endif()
+ if(BUILD_WSI_X11)
+    set(CMAKE_BUILD_TYPE "Debug")
+ 
+@@ -251,10 +256,11 @@ if(BUILD_WSI_X11)
+ 
+    target_include_directories(wsi_x11 PRIVATE
+       ${PROJECT_SOURCE_DIR}
++      ${ANDROID_HEADERS_INCLUDE_DIR}
+       ${VULKAN_CXX_INCLUDE}
+       ${CMAKE_CURRENT_BINARY_DIR})
+ 
+    target_compile_options(wsi_x11 INTERFACE "-DBUILD_WSI_X11=1")
+-   list(APPEND LINK_WSI_LIBS wsi_x11 xcb xcb-present xcb-xfixes xcb-dri3 X11-xcb android)
++   list(APPEND LINK_WSI_LIBS wsi_x11 xcb xcb-present xcb-xfixes xcb-dri3 X11-xcb)
+ else()
+    list(APPEND JSON_COMMANDS COMMAND sed -i '/VK_KHR_xcb_surface/d' ${CMAKE_CURRENT_BINARY_DIR}/VkLayer_window_system_integration.json)
+    list(APPEND JSON_COMMANDS COMMAND sed -i '/VK_KHR_xlib_surface/d' ${CMAKE_CURRENT_BINARY_DIR}/VkLayer_window_system_integration.json)
