@@ -1,0 +1,386 @@
+--- a/InitOutput.c
++++ b/InitOutput.c
+@@ -22,6 +22,8 @@
+ #include <sys/mman.h>
+ #include <dri3.h>
+ #include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
+ #include <dlfcn.h>
+ #include "fb.h"
+ #include "mipointer.h"
+@@ -1063,6 +1065,29 @@
+         priv->wasLocked = TRUE;
+ 
+     pPix->devPrivate.ptr = priv->locked ?: priv->mem;
++    if (priv->imported && index == EXA_PREPARE_SRC &&
++        pPix->devPrivate.ptr && priv->buffer) {
++        static uint64_t importedReads;
++        uint64_t read = ++importedReads;
++        if (read <= 16 || read % 10 == 0) {
++            const LorieBuffer_Desc *desc = LorieBuffer_description(priv->buffer);
++            const uint8_t *pixels = pPix->devPrivate.ptr;
++            size_t bytes = (size_t)desc->stride * desc->height * sizeof(uint32_t);
++            uint64_t hash = UINT64_C(1469598103934665603);
++            for (size_t offset = 0; offset < bytes; offset += 4096) {
++                size_t count = bytes - offset < 64 ? bytes - offset : 64;
++                for (size_t i = 0; i < count; ++i) {
++                    hash ^= pixels[offset + i];
++                    hash *= UINT64_C(1099511628211);
++                }
++            }
++            log(INFO,
++                "DRI3: present-read sample=%llu buffer=%llu %dx%d stride=%d hash=%016llx",
++                (unsigned long long)read, (unsigned long long)desc->id,
++                desc->width, desc->height, desc->stride,
++                (unsigned long long)hash);
++        }
++    }
+     return TRUE;
+ }
+ 
+@@ -1161,6 +1186,21 @@
+     return TRUE;
+ }
+ 
++static int lorieDri3Open(__unused ScreenPtr screen,
++                         __unused RRProviderPtr provider,
++                         int *fd) {
++    *fd = open("/dev/null", O_RDWR | O_CLOEXEC);
++    if (*fd < 0) {
++        log(ERROR, "DRI3: failed to create rootless GBM token fd: %s",
++            strerror(errno));
++        return BadAlloc;
++    }
++
++    if (lorieServerDebugEnabled)
++        log(INFO, "DRI3: opened rootless GBM token fd %d", *fd);
++    return Success;
++}
++
+ static int lorieGetModifiers(__unused ScreenPtr screen, uint32_t format, uint32_t *num_modifiers, uint64_t **modifiers) {
+     static uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
+ 
+@@ -1177,6 +1217,7 @@
+ 
+ static dri3_screen_info_rec lorieDri3Info = {
+         .version = 2,
++        .open = lorieDri3Open,
+         .fds_from_pixmap = FalseNoop,
+         .pixmap_from_fds = loriePixmapFromFds,
+         .get_formats = lorieGetFormats,
+--- a/activity.c
++++ b/activity.c
+@@ -477,7 +477,19 @@
+             {"sendTextEvent", "([B)V", (void *)&sendTextEvent},
+     };
+     jclass udroidClass = (*env)->FindClass(env, "org/randomcoder/udroid/x11/X11DisplayView");
+-    (*env)->RegisterNatives(env, udroidClass, udroidMethods, sizeof(udroidMethods)/sizeof(udroidMethods[0]));
++    if (udroidClass) {
++        (*env)->RegisterNatives(
++                env,
++                udroidClass,
++                udroidMethods,
++                sizeof(udroidMethods) / sizeof(udroidMethods[0])
++        );
++        (*env)->DeleteLocalRef(env, udroidClass);
++    } else if ((*env)->ExceptionCheck(env)) {
++        // The standalone Termux:X11 APK does not package uDroid's host view.
++        // Treat that bridge as optional instead of aborting JNI_OnLoad.
++        (*env)->ExceptionClear(env);
++    }
+ 
+     return JNI_VERSION_1_6;
+ }
+--- a/buffer.c
++++ b/buffer.c
+@@ -10,6 +10,7 @@
+ #include <math.h>
+ #include <pixman.h>
+ #include <stdbool.h>
++#include <linux/dma-buf.h>
+ #include <linux/memfd.h>
+ #include <sys/mman.h>
+ #include <sys/socket.h>
+@@ -27,6 +28,7 @@
+     LorieBuffer_Desc desc;
+ 
+     int8_t locked;
++    bool dmaBufAccess;
+     void* lockedData;
+ 
+     // file descriptor of shared memory fragment for shared memory backed buffer
+@@ -35,6 +37,7 @@
+     off_t offset;
+ 
+     GLuint id;
++    GLuint externalId;
+     EGLImage image;
+     struct xorg_list link;
+ };
+@@ -259,6 +262,8 @@
+ 
+     if (eglGetCurrentContext())
+         glDeleteTextures(1, &buffer->id);
++    if (eglGetCurrentContext() && buffer->externalId)
++        glDeleteTextures(1, &buffer->externalId);
+ 
+     if (eglGetCurrentDisplay() && buffer->image)
+         eglDestroyImageKHR(eglGetCurrentDisplay(), buffer->image);
+@@ -297,8 +302,21 @@
+         return EEXIST;
+     }
+ 
+-    if (buffer->desc.type == LORIEBUFFER_REGULAR || buffer->desc.type == LORIEBUFFER_FD)
++    if (buffer->desc.type == LORIEBUFFER_FD) {
++        struct dma_buf_sync sync = {
++                .flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW,
++        };
++        int result;
++        do {
++            result = ioctl(buffer->fd, DMA_BUF_IOCTL_SYNC, &sync);
++        } while (result < 0 && errno == EINTR);
++        if (result == 0)
++            buffer->dmaBufAccess = true;
++        else if (errno != ENOTTY && errno != EINVAL)
++            return errno;
+         buffer->lockedData = buffer->desc.data;
++    } else if (buffer->desc.type == LORIEBUFFER_REGULAR)
++        buffer->lockedData = buffer->desc.data;
+     else if (buffer->desc.type == LORIEBUFFER_AHARDWAREBUFFER)
+         ret = AHardwareBuffer_lock(buffer->desc.buffer, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, &buffer->lockedData);
+ 
+@@ -322,6 +340,17 @@
+ 
+     if (buffer->desc.type == LORIEBUFFER_AHARDWAREBUFFER)
+         ret = AHardwareBuffer_unlock(buffer->desc.buffer, NULL);
++    else if (buffer->desc.type == LORIEBUFFER_FD && buffer->dmaBufAccess) {
++        struct dma_buf_sync sync = {
++                .flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW,
++        };
++        do {
++            ret = ioctl(buffer->fd, DMA_BUF_IOCTL_SYNC, &sync);
++        } while (ret < 0 && errno == EINTR);
++        buffer->dmaBufAccess = false;
++        if (ret < 0)
++            ret = errno;
++    }
+ 
+     buffer->lockedData = NULL;
+     buffer->locked = false;
+@@ -425,6 +454,35 @@
+         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, buffer->desc.stride, buffer->desc.height, buffer->desc.format == AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE, buffer->desc.data);
+ }
+ 
++__LIBC_HIDDEN__ bool LorieBuffer_bindExternalTexture(LorieBuffer *buffer) {
++    if (!buffer || buffer->desc.type != LORIEBUFFER_AHARDWAREBUFFER ||
++        !buffer->image)
++        return false;
++
++    if (!buffer->externalId) {
++        glGenTextures(1, &buffer->externalId);
++        glBindTexture(GL_TEXTURE_EXTERNAL_OES, buffer->externalId);
++        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER,
++                        GL_NEAREST);
++        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER,
++                        GL_NEAREST);
++        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S,
++                        GL_CLAMP_TO_EDGE);
++        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T,
++                        GL_CLAMP_TO_EDGE);
++        glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, buffer->image);
++        if (glGetError() != GL_NO_ERROR) {
++            glDeleteTextures(1, &buffer->externalId);
++            buffer->externalId = 0;
++            return false;
++        }
++    } else {
++        glBindTexture(GL_TEXTURE_EXTERNAL_OES, buffer->externalId);
++    }
++
++    return true;
++}
++
+ __LIBC_HIDDEN__ unsigned int LorieBuffer_getGLTextureId(LorieBuffer *buffer) {
+     return buffer ? buffer->id : 0;
+ }
+--- a/buffer.h
++++ b/buffer.h
+@@ -164,6 +164,12 @@
+ void LorieBuffer_bindTexture(LorieBuffer* _Nullable buffer);
+ 
+ /**
++ * Bind an AHardwareBuffer through Android's external-texture consumer path.
++ * Returns false for non-AHardwareBuffer storage or when the import failed.
++ */
++bool LorieBuffer_bindExternalTexture(LorieBuffer* _Nullable buffer);
++
++/**
+  * Get the GL texture id the buffer is attached to (see LorieBuffer_attachToGL).
+  * Returns 0 if the buffer was not attached to GL yet.
+  *
+--- a/renderer.c
++++ b/renderer.c
+@@ -113,6 +113,19 @@
+ 
+ static const char fragmentShaderSrc[] = FRAGMENT_SHADER();
+ static const char fragmentShaderBgraSrc[] = FRAGMENT_SHADER(".bgra");
++
++#define EXTERNAL_FRAGMENT_SHADER(texture) \
++    "#extension GL_OES_EGL_image_external : require\n" \
++    "precision mediump float;\n" \
++    "varying vec2 outTexCoords;\n" \
++    "uniform samplerExternalOES texture;\n" \
++    "void main(void) {\n" \
++    "   gl_FragColor = texture2D(texture, outTexCoords)" texture ";\n" \
++    "}\n"
++
++static const char fragmentShaderExternalSrc[] = EXTERNAL_FRAGMENT_SHADER();
++static const char fragmentShaderExternalBgraSrc[] =
++    EXTERNAL_FRAGMENT_SHADER(".bgra");
+ 
+ static EGLDisplay egl_display = EGL_NO_DISPLAY;
+ static EGLContext ctx = EGL_NO_CONTEXT;
+@@ -163,6 +176,10 @@
+ 
+ GLuint g_texture_program = 0, gv_pos = 0, gv_coords = 0;
+ GLuint g_texture_program_bgra = 0, gv_pos_bgra = 0, gv_coords_bgra = 0;
++GLuint g_texture_program_external = 0, gv_pos_external = 0,
++       gv_coords_external = 0;
++GLuint g_texture_program_external_bgra = 0, gv_pos_external_bgra = 0,
++       gv_coords_external_bgra = 0;
+ 
+ static void* rendererThread(void);
+ 
+@@ -293,6 +310,16 @@
+     g_texture_program_bgra = createProgram(vertexShaderSrc, fragmentShaderBgraSrc);
+     if (!g_texture_program_bgra)
+         log("Xlorie: GLESv2: Unable to create bgra shader program.\n");
++
++    g_texture_program_external =
++        createProgram(vertexShaderSrc, fragmentShaderExternalSrc);
++    if (!g_texture_program_external)
++        log("Xlorie: GLESv2: Unable to create external shader program.\n");
++
++    g_texture_program_external_bgra =
++        createProgram(vertexShaderSrc, fragmentShaderExternalBgraSrc);
++    if (!g_texture_program_external_bgra)
++        log("Xlorie: GLESv2: Unable to create external bgra shader program.\n");
+ 
+     gv_pos = (GLuint) glGetAttribLocation(g_texture_program, "position");
+     gv_coords = (GLuint) glGetAttribLocation(g_texture_program, "texCoords");
+@@ -300,6 +327,15 @@
+     gv_pos_bgra = (GLuint) glGetAttribLocation(g_texture_program_bgra, "position");
+     gv_coords_bgra = (GLuint) glGetAttribLocation(g_texture_program_bgra, "texCoords");
+ 
++    gv_pos_external =
++        (GLuint) glGetAttribLocation(g_texture_program_external, "position");
++    gv_coords_external =
++        (GLuint) glGetAttribLocation(g_texture_program_external, "texCoords");
++    gv_pos_external_bgra = (GLuint) glGetAttribLocation(
++        g_texture_program_external_bgra, "position");
++    gv_coords_external_bgra = (GLuint) glGetAttribLocation(
++        g_texture_program_external_bgra, "texCoords");
++
+     glActiveTexture(GL_TEXTURE0);
+     glGenTextures(1, &cursor.id);
+ 
+@@ -630,7 +666,9 @@
+     log("Xlorie: new surface applied: %p\n", sfc);
+ }
+ 
+-static void drawRegion(GLuint id, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, uint8_t flip);
++static void drawRegion(GLuint id, float x0, float y0, float x1, float y1,
++                       float u0, float v0, float u1, float v1,
++                       uint8_t flip, bool external);
+ static void drawCursor(float displayWidth, float displayHeight, float sourceLeft, float sourceTop);
+ 
+ // Drains the deferred GPU copy queue (filled by present_execute_copy) into the root texture via
+@@ -717,7 +755,9 @@
+                 }
+             }
+ 
+-            LorieBuffer_bindTexture(src);
++            bool external = LorieBuffer_bindExternalTexture(src);
++            if (!external)
++                LorieBuffer_bindTexture(src);
+             {
+                 static uint64_t srcSizeLogCount = 0;
+                 if (lorieDebugEnabled && (srcSizeLogCount++ & 15) == 0 && srcDesc->buffer) {
+@@ -747,7 +787,8 @@
+                 log("rendererApplyPendingGpuCopies: rect (%d,%d)-(%d,%d) off=(%d,%d) -> ndc=(%.3f,%.3f)-(%.3f,%.3f) uv=(%.3f,%.3f)-(%.3f,%.3f) srcTex=%u dstTex=%u swizzle=%d\n",
+                     r.x1, r.y1, r.x2, r.y2, entry.xOff, entry.yOff, x0, y0, x1, y1, u0, v0, u1, v1,
+                     LorieBuffer_getGLTextureId(src), LorieBuffer_getGLTextureId(dst), needsSwizzle);
+-                drawRegion(0, x0, y0, x1, y1, u0, v0, u1, v1, needsSwizzle);
++                drawRegion(0, x0, y0, x1, y1, u0, v0, u1, v1,
++                           needsSwizzle, external);
+             }
+         }
+ 
+@@ -902,7 +943,7 @@
+                sourceLeft / (float) desc->width * xfactor, sourceTop / (float) desc->height,
+                (sourceLeft + sourceWidth) / (float) desc->width * xfactor,
+                (sourceTop + sourceHeight) / (float) desc->height,
+-               LorieBuffer_isRgba(buffer));
++               LorieBuffer_isRgba(buffer), false);
+     fence = eglCreateSyncKHR(egl_display, EGL_SYNC_FENCE_KHR, NULL);
+     glFlush();
+ 
+@@ -1090,7 +1131,9 @@
+     return 0;
+ }
+ 
+-static void drawRegion(GLuint id, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, uint8_t flip) {
++static void drawRegion(GLuint id, float x0, float y0, float x1, float y1,
++                       float u0, float v0, float u1, float v1,
++                       uint8_t flip, bool external) {
+     float coords[16] = {
+         x0, -y0, u0, v0,
+         x1, -y0, u1, v0,
+@@ -1098,15 +1141,29 @@
+         x1, -y1, u1, v1,
+     };
+ 
+-    GLuint p = flip ? gv_pos_bgra : gv_pos, c = flip ? gv_coords_bgra : gv_coords;
++    GLuint program;
++    GLuint p;
++    GLuint c;
++    GLenum target = external ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D;
+ 
+-    glActiveTexture(GL_TEXTURE0);
+-    glUseProgram(flip ? g_texture_program_bgra : g_texture_program);
+-    if (id)
+-        glBindTexture(GL_TEXTURE_2D, id);
++    if (external) {
++        program = flip ? g_texture_program_external_bgra
++                       : g_texture_program_external;
++        p = flip ? gv_pos_external_bgra : gv_pos_external;
++        c = flip ? gv_coords_external_bgra : gv_coords_external;
++    } else {
++        program = flip ? g_texture_program_bgra : g_texture_program;
++        p = flip ? gv_pos_bgra : gv_pos;
++        c = flip ? gv_coords_bgra : gv_coords;
++    }
+ 
+-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtering);
+-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtering);
++    glActiveTexture(GL_TEXTURE0);
++    glUseProgram(program);
++    if (id)
++        glBindTexture(target, id);
++
++    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filtering);
++    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filtering);
+     glVertexAttribPointer(p, 2, GL_FLOAT, GL_FALSE, 16, coords);
+     glVertexAttribPointer(c, 2, GL_FLOAT, GL_FALSE, 16, &coords[2]);
+     glEnableVertexAttribArray(p);
+@@ -1126,7 +1183,7 @@
+     h = 2.f * (float) state->cursor.height / displayHeight;
+     glEnable(GL_BLEND);
+     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+-    drawRegion(cursor.id, x, y, x + w, y + h, 0.f, 0.f, 1.f, 1.f, false);
++    drawRegion(cursor.id, x, y, x + w, y + h, 0.f, 0.f, 1.f, 1.f,
++               false, false);
+     glDisable(GL_BLEND);
+ }
+-

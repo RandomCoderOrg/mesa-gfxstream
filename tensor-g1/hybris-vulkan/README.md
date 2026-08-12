@@ -204,6 +204,14 @@ The script installs the AHB wrapper and xMeM WSI into separate prefixes under
 standalone `ahb-probe` first; promote to `vkcube` only when every allocation,
 socket transfer, receiver-lifetime, stride, fence, and hash case passes.
 
+The matching Termux:X11 external-texture experiment is preserved as
+[`patches/termux-x11-0001-probe-ahb-external-textures.patch`](patches/termux-x11-0001-probe-ahb-external-textures.patch).
+It is a diagnostic patch, not a default or accepted fix. Read the
+[`2026-08-12 experiment ledger`](experiments/2026-08-12-xmem-ahb-kde.md) before
+applying it: direct `GL_TEXTURE_EXTERNAL_OES` sampling, producer detachment,
+and DMA-BUF CPU synchronization did not pass the visual artifact gate or make
+Plasma panel interactions responsive.
+
 The default `TENSOR_VK_WSI_MODE=copy` uses a DRI3 DMA-BUF pixmap followed by a
 Termux:X11 server-side GPU copy. It was the fastest and most consistent mode in
 the initial Tensor G1 measurements. The alternatives are:
