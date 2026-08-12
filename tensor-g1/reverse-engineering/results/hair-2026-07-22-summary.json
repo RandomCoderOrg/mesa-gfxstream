@@ -1,0 +1,58 @@
+{
+  "date": "2026-07-22",
+  "mesa": "26.3.0-devel",
+  "gpu_id": "0x92020010",
+  "product_id": "0x090202",
+  "stacks": {
+    "proprietary": "OpenGL ES 3.2 v1.r54p3",
+    "panfrost": "OpenGL ES 3.1 Mesa 26.3.0-devel"
+  },
+  "baseline_100x": {
+    "rgba32f": {
+      "proprietary": {"pass": 100, "fail": 0, "median_us": 762.268, "p95_us": 2247.681},
+      "panfrost": {"pass": 100, "fail": 0, "median_us": 1087.199, "p95_us": 1641.724}
+    },
+    "r32ui": {
+      "proprietary": {"pass": 100, "fail": 0, "median_us": 786.764, "p95_us": 2125.244},
+      "panfrost": {"pass": 100, "fail": 0, "median_us": 1079.590, "p95_us": 1719.686}
+    },
+    "r16ui": {
+      "proprietary": {"pass": 100, "fail": 0, "median_us": 810.913, "p95_us": 2360.392},
+      "panfrost": {"pass": 100, "fail": 0, "median_us": 1128.520, "p95_us": 1551.757}
+    }
+  },
+  "isolated_range_100x": {
+    "proprietary": {"pass": 100, "fail": 0, "median_us": 1839.600, "p95_us": 2420.044},
+    "panfrost": {"pass": 100, "fail": 0, "median_us": 2143.921, "p95_us": 3512.166}
+  },
+  "interleaved_xfb_stride12_5x": {
+    "proprietary": {"pass": 5, "fail": 0},
+    "panfrost": {"pass": 5, "fail": 0}
+  },
+  "kbase_atom_id_fix": {
+    "root_cause": "JM dependency ID zero means no dependency; the adapter used atom zero for the first vertex/tiler job",
+    "validation": {
+      "isolated_texture_buffer_512": {"pass": 5, "fail": 0},
+      "texture_buffer_deqp_three_runs": {"pass": 33, "fail": 0},
+      "mixed_buffer_texture_xfb_100x": {"pass": 600, "fail": 0},
+      "orphan_after_bind_100x": {
+        "proprietary": {"pass": 100, "fail": 0, "median_us": 753.357, "p95_us": 1910.156},
+        "panfrost": {"pass": 100, "fail": 0, "median_us": 442.708, "p95_us": 1915.731}
+      }
+    }
+  },
+  "blender_3_0_1_gate": {
+    "scene_load": "pass",
+    "objects": 54,
+    "particle_systems": 13,
+    "ui": "blocked by unavailable geometry shaders; factory cube reproduces",
+    "eevee": "blocked by unavailable geometry shaders",
+    "panfrost_unforced_desktop_gl": "3.1",
+    "genxml_changed": false
+  },
+  "transient": {
+    "observation": "resolved as invalid first dependency on reserved JM atom ID zero",
+    "reproduced_after_atom_id_fix": false
+  },
+  "genxml_changed": false
+}

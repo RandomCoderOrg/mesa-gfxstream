@@ -1,0 +1,4 @@
+{"probe":"environment","renderer":"Mali-G78 MC20 (Panfrost)","gl_version":"OpenGL ES 3.1 Mesa 26.3.0-devel","egl_version":"1.5","init_us":471240.723}
+{"probe":"buffer-texture-xfb","case":"rgba32f","iteration":1,"renderer":"Mali-G78 MC20 (Panfrost)","status":"PASS","gl_error":0,"expected_hash":"e8bc7e6fa7b6c4a5","actual_hash":"e8bc7e6fa7b6c4a5","gpu_wait_us":2593.506}
+{"probe":"buffer-texture-xfb","case":"r32ui","iteration":1,"renderer":"Mali-G78 MC20 (Panfrost)","status":"PASS","gl_error":0,"expected_hash":"a368ff390283d8b8","actual_hash":"a368ff390283d8b8","gpu_wait_us":1605.957}
+{"probe":"buffer-texture-xfb","case":"r16ui","iteration":1,"renderer":"Mali-G78 MC20 (Panfrost)","status":"PASS","gl_error":0,"expected_hash":"cfbbbcea3da3e24c","actual_hash":"cfbbbcea3da3e24c","gpu_wait_us":1817.098}

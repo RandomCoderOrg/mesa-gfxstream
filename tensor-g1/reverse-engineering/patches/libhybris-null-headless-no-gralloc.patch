@@ -1,0 +1,19 @@
+From: Tensor G1 reverse-engineering probes
+Subject: [PATCH] egl/null: skip gralloc initialization for headless probes
+
+The null platform's display and pbuffer paths do not allocate native window
+buffers. Initializing gralloc here requires libui_compat_layer.so, which is
+unavailable to a rootless glibc process. Keep the platform useful for
+differential pbuffer probes by loading only the vendor EGL/GLES implementation.
+
+This deliberately does not make window surfaces work. Any consumer creating a
+native window must use a platform that initializes gralloc.
+
+--- a/hybris/egl/platforms/null/eglplatform_null.c
++++ b/hybris/egl/platforms/null/eglplatform_null.c
+@@ -34,7 +34,6 @@ static HYBRIS_IMPLEMENT_FUNCTION0(nullui, EGLNativeWindowType, android_createDis
+ static void nullws_init_module(struct ws_egl_interface *egl_iface)
+ {
+-        hybris_gralloc_initialize(0);
+         eglplatformcommon_init(egl_iface);
+ }
