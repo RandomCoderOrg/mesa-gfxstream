@@ -32,6 +32,7 @@
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 #include "util/box.h"
+#include "loader/loader.h"
 #include "pipe/p_context.h"
 #include "pipe-loader/pipe_loader.h"
 #include "frontend/drisw_api.h"
@@ -407,6 +408,14 @@ drisw_allocate_textures(struct dri_context *stctx,
       if (!dri_image_drawable_get_buffers(drawable, &images,
                                           statts, count))
          imported_buffers = false;
+
+      if (debug_get_bool_option("TENSOR_G1_TRACE_FB", false))
+         fprintf(stderr,
+                 "tensor-g1-fb: image-loader=%p imported=%d mask=0x%x "
+                 "drawable=%ux%u\n",
+                 (void *)image, imported_buffers,
+                 imported_buffers ? images.image_mask : 0,
+                 drawable->w, drawable->h);
    }
 
    width  = drawable->w;
@@ -506,6 +515,13 @@ drisw_allocate_textures(struct dri_context *stctx,
             drawable->textures[statts[i]] =
                screen->base.screen->resource_create(screen->base.screen, &templ);
 
+         if (debug_get_bool_option("TENSOR_G1_TRACE_FB", false))
+            fprintf(stderr,
+                    "tensor-g1-fb: allocate statt=%u size=%ux%u format=%u "
+                    "bind=0x%x resource=%p\n",
+                    statts[i], templ.width0, templ.height0, templ.format,
+                    templ.bind, (void *)drawable->textures[statts[i]]);
+
          if (drawable->stvis.samples > 1) {
             templ.bind = templ.bind &
                ~(PIPE_BIND_SCANOUT | PIPE_BIND_SHARED | PIPE_BIND_DISPLAY_TARGET);
@@ -583,6 +599,71 @@ static const struct drisw_loader_funcs drisw_shm_lf = {
    .put_image_shm = drisw_put_image_shm
 };
 
+static void
+panfrost_drisw_flush_frontbuffer(struct pipe_screen *pscreen,
+                                 struct pipe_context *pipe,
+                                 struct pipe_resource *resource,
+                                 unsigned level, unsigned layer,
+                                 void *context_private,
+                                 unsigned nboxes,
+                                 struct pipe_box *sub_boxes)
+{
+   struct dri_drawable *drawable = context_private;
+   unsigned count = nboxes ? nboxes : 1;
+
+   for (unsigned i = 0; i < count; ++i) {
+      struct pipe_transfer *transfer = NULL;
+      struct pipe_box box;
+
+      if (nboxes) {
+         box = sub_boxes[i];
+         box.z = layer;
+         box.depth = 1;
+      } else {
+         u_box_3d(0, 0, layer, resource->width0, resource->height0, 1, &box);
+      }
+
+      void *map = pipe_texture_map(pipe, resource, level, layer, PIPE_MAP_READ,
+                                   box.x, box.y, box.width, box.height,
+                                   &transfer);
+      if (!map)
+         continue;
+
+      drisw_put_image2(drawable, map, box.x, box.y, box.width, box.height,
+                       transfer->stride);
+      pipe_texture_unmap(pipe, transfer);
+   }
+}
+
+static struct pipe_screen *
+panfrost_drisw_create_screen(struct dri_screen *screen,
+                             bool driver_name_is_inferred)
+{
+   struct pipe_screen *pscreen;
+   int fd;
+
+   if (!loader_kbase_x11_enabled())
+      return NULL;
+
+   fd = loader_open_kbase_device();
+   if (fd < 0)
+      return NULL;
+
+   bool success = pipe_loader_drm_probe_fd(&screen->dev, fd, false);
+   close(fd);
+   if (!success)
+      return NULL;
+
+   pscreen = pipe_loader_create_screen(screen->dev, driver_name_is_inferred);
+   if (!pscreen) {
+      pipe_loader_release(&screen->dev, 1);
+      return NULL;
+   }
+
+   pscreen->flush_frontbuffer = panfrost_drisw_flush_frontbuffer;
+   return pscreen;
+}
+
 void
 drisw_init_drawable(struct dri_drawable *drawable, bool isPixmap, int alphaBits)
 {
@@ -609,14 +690,15 @@ drisw_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
    }
 
    bool success = false;
+   pscreen = panfrost_drisw_create_screen(screen, driver_name_is_inferred);
 #ifdef HAVE_DRISW_KMS
-   if (screen->fd != -1)
+   if (!pscreen && screen->fd != -1)
       success = pipe_loader_sw_probe_kms(&screen->dev, screen->fd);
 #endif
-   if (!success)
+   if (!pscreen && !success)
       success = pipe_loader_sw_probe_dri(&screen->dev, lf);
 
-   if (success)
+   if (!pscreen && success)
       pscreen = pipe_loader_create_screen(screen->dev, driver_name_is_inferred);
 
    return pscreen;

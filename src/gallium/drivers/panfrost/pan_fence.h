@@ -8,10 +8,12 @@
 #include "pipe/p_state.h"
 
 struct panfrost_context;
+struct kbase_syncobj;
 
 struct pipe_fence_handle {
    struct pipe_reference reference;
    uint32_t syncobj;
+   struct kbase_syncobj *kbase;
    bool signaled;
 };
 

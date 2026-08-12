@@ -340,6 +340,9 @@ panfrost_bo_munmap(struct panfrost_bo *bo)
 {
    PAN_TRACE_FUNC(PAN_TRACE_GL_BO);
 
+   if (bo->kmod_bo->flags & PAN_KMOD_BO_FLAG_PERSISTENT_MAP)
+      return;
+
    if (!bo->ptr.cpu)
       return;
 

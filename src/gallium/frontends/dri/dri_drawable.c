@@ -40,6 +40,9 @@
 
 #include "state_tracker/st_context.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+
 static uint32_t drifb_ID = 0;
 
 static bool
@@ -76,7 +79,20 @@ dri_st_framebuffer_validate(struct st_context *st,
          if (new_stamp && drawable->update_drawable_info)
             drawable->update_drawable_info(drawable);
 
+         if (getenv("TENSOR_G1_TRACE_FB"))
+            fprintf(stderr,
+                    "tensor-g1-dri: screen-type=%u request-mask=0x%x "
+                    "new-mask=0x%x drawable=%ux%u\n",
+                    screen->type, statt_mask, new_mask,
+                    drawable->w, drawable->h);
+
          drawable->allocate_textures(ctx, drawable, statts, count);
+
+         if (getenv("TENSOR_G1_TRACE_FB")) {
+            for (i = 0; i < count; i++)
+               fprintf(stderr, "tensor-g1-dri: texture[%u]=%p\n",
+                       statts[i], (void *)textures[statts[i]]);
+         }
 
          /* add existing textures */
          for (i = 0; i < ST_ATTACHMENT_COUNT; i++) {

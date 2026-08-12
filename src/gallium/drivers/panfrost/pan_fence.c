@@ -11,6 +11,7 @@
 #include "pan_fence.h"
 #include "pan_context.h"
 #include "pan_screen.h"
+#include "kmod/kbase_kmod.h"
 
 #include "util/os_time.h"
 #include "util/u_inlines.h"
@@ -24,7 +25,10 @@ panfrost_fence_reference(struct pipe_screen *pscreen,
    struct pipe_fence_handle *old = *ptr;
 
    if (pipe_reference(&old->reference, &fence->reference)) {
-      drmSyncobjDestroy(panfrost_device_fd(dev), old->syncobj);
+      if (pan_kmod_dev_is_kbase(dev->kmod.dev))
+         pan_kmod_kbase_syncobj_destroy(dev->kmod.dev, old->kbase);
+      else
+         drmSyncobjDestroy(panfrost_device_fd(dev), old->syncobj);
       free(old);
    }
 
@@ -40,6 +44,16 @@ panfrost_fence_finish(struct pipe_screen *pscreen, struct pipe_context *ctx,
 
    if (fence->signaled)
       return true;
+
+   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+      int64_t timeout_ns = timeout > (uint64_t)(INT64_MAX - 1000000000LL)
+                              ? INT64_MAX - 1000000000LL
+                              : (int64_t)timeout;
+      fence->signaled =
+         pan_kmod_kbase_syncobj_wait(dev->kmod.dev, fence->kbase,
+                                     timeout_ns);
+      return fence->signaled;
+   }
 
    uint64_t abs_timeout = os_time_get_absolute_timeout(timeout);
    if (abs_timeout == OS_TIMEOUT_INFINITE)
@@ -58,6 +72,9 @@ panfrost_fence_get_fd(struct pipe_screen *screen, struct pipe_fence_handle *f)
    struct panfrost_device *dev = pan_device(screen);
    int fd = -1;
 
+   if (pan_kmod_dev_is_kbase(dev->kmod.dev))
+      return -1;
+
    drmSyncobjExportSyncFile(panfrost_device_fd(dev), f->syncobj, &fd);
    return fd;
 }
@@ -68,6 +85,9 @@ panfrost_fence_from_fd(struct panfrost_context *ctx, int fd,
 {
    struct panfrost_device *dev = pan_device(ctx->base.screen);
    int ret;
+
+   if (pan_kmod_dev_is_kbase(dev->kmod.dev))
+      return NULL;
 
    struct pipe_fence_handle *f = calloc(1, sizeof(*f));
    if (!f)
@@ -110,6 +130,17 @@ panfrost_fence_create(struct panfrost_context *ctx)
 {
    struct panfrost_device *dev = pan_device(ctx->base.screen);
    int fd = -1, ret;
+
+   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+      struct pipe_fence_handle *f = calloc(1, sizeof(*f));
+      if (!f)
+         return NULL;
+
+      f->kbase =
+         pan_kmod_kbase_syncobj_dup(dev->kmod.dev, ctx->syncobj_kbase);
+      pipe_reference_init(&f->reference, 1);
+      return f;
+   }
 
    /* Snapshot the last rendering out fence. We'd rather have another
     * syncobj instead of a sync file, but this is all we get.

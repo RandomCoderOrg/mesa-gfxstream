@@ -231,6 +231,15 @@ panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx,
       perf_debug(ctx, "Flushing the current FBO due to: %s", reason);
       panfrost_batch_submit(ctx, batch);
       batch = panfrost_get_batch(ctx, &ctx->pipe_framebuffer);
+   } else {
+      /* A draw which is skipped before job emission can still set these
+       * compatibility constraints.  Since the batch has no queued vertex,
+       * tiler, or compute work, resetting them is equivalent to getting a
+       * fresh batch and lets prepare_draw() retry with the new state.
+       */
+      batch->line_smoothing = U_TRISTATE_UNSET;
+      batch->sprite_coord_origin = U_TRISTATE_UNSET;
+      batch->first_provoking_vertex = U_TRISTATE_UNSET;
    }
 
    ctx->batch = batch;

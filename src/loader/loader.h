@@ -41,6 +41,19 @@ extern "C" {
 int
 loader_open_device(const char *);
 
+/* Android Mali devices expose Kbase directly instead of a DRM render node. */
+const char *
+loader_get_kbase_device_path(void);
+
+int
+loader_open_kbase_device(void);
+
+bool
+loader_is_kbase_device_fd(int fd);
+
+bool
+loader_kbase_x11_enabled(void);
+
 char *
 loader_get_kernel_driver_name(int fd);
 

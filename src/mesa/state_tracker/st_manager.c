@@ -53,6 +53,9 @@
 #include "st_cb_flush.h"
 #include "st_manager.h"
 #include "st_sampler_view.h"
+
+#include <stdio.h>
+#include <stdlib.h>
 #include "st_util.h"
 
 #include "pipe/p_context.h"
@@ -240,6 +243,15 @@ st_framebuffer_validate(struct gl_framebuffer *stfb,
                                  stfb->num_statts, textures, &resolve))
          return;
 
+      if (getenv("TENSOR_G1_TRACE_FB")) {
+         fprintf(stderr, "tensor-g1-stfb: validate count=%u stamp=%d->%d",
+                 stfb->num_statts, stfb->drawable_stamp, new_stamp);
+         for (i = 0; i < stfb->num_statts; i++)
+            fprintf(stderr, " attachment[%u]=%u:%p", i, stfb->statts[i],
+                    (void *)textures[i]);
+         fputc('\n', stderr);
+      }
+
       stfb->drawable_stamp = new_stamp;
       new_stamp = p_atomic_read(&stfb->drawable->stamp);
    } while(stfb->drawable_stamp != new_stamp);
@@ -291,6 +303,13 @@ st_framebuffer_validate(struct gl_framebuffer *stfb,
       ++stfb->stamp;
       _mesa_resize_framebuffer(st->ctx, stfb, width, height);
    }
+
+   if (getenv("TENSOR_G1_TRACE_FB"))
+      fprintf(stderr,
+              "tensor-g1-stfb: changed=%d size=%ux%u read-index=%d "
+              "read-rb=%p\n",
+              changed, stfb->Width, stfb->Height,
+              stfb->_ColorReadBufferIndex, (void *)stfb->_ColorReadBuffer);
 }
 
 /**

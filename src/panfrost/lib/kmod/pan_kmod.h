@@ -129,6 +129,11 @@ enum pan_kmod_bo_flags {
     * the KMD to force non-coherent mappings on IO coherent setup.
     */
    PAN_KMOD_BO_FLAG_IO_COHERENT = BITFIELD_BIT(7),
+
+   /* The backend owns the lifetime of the CPU mapping. This is required by
+    * Kbase SAME_VA allocations, where unmapping the CPU address also removes
+    * the GPU virtual address. */
+   PAN_KMOD_BO_FLAG_PERSISTENT_MAP = BITFIELD_BIT(8),
 };
 
 /* Allowed group priority flags. */
@@ -484,14 +489,27 @@ struct pan_kmod_ops {
    struct pan_kmod_bo *(*bo_import)(struct pan_kmod_dev *dev, uint32_t handle,
                                     uint64_t size);
 
+   /* Import a DMA-BUF without DRM PRIME. Non-DRM backends such as Android's
+    * Kbase use this hook and own duplicate detection themselves. Optional. */
+   struct pan_kmod_bo *(*bo_import_dmabuf)(struct pan_kmod_dev *dev, int fd,
+                                           uint64_t size);
+
    /* Post export operations.
     * Return 0 on success, -1 otherwise.
     * This method is optional.
     */
    int (*bo_export)(struct pan_kmod_bo *bo, int dmabuf_fd);
 
+   /* Export a DMA-BUF without DRM PRIME. Optional. */
+   int (*bo_export_dmabuf)(struct pan_kmod_bo *bo);
+
    /* Get the file offset to use to mmap() a buffer object. */
    off_t (*bo_get_mmap_offset)(struct pan_kmod_bo *bo);
+
+   /* Map a BO directly when it cannot be represented by a DRM mmap offset.
+    * Optional. */
+   void *(*bo_mmap)(struct pan_kmod_bo *bo, int prot, int flags,
+                    void *host_addr);
 
    /* Flush the pending BO map syncs. */
    int (*flush_bo_map_syncs)(struct pan_kmod_dev *dev);
@@ -706,8 +724,12 @@ pan_kmod_bo_export(struct pan_kmod_bo *bo)
 
    int fd;
 
-   if (drmPrimeHandleToFD(bo->dev->fd, bo->handle, DRM_CLOEXEC | DRM_RDWR,
-                          &fd)) {
+   if (bo->dev->ops->bo_export_dmabuf) {
+      fd = bo->dev->ops->bo_export_dmabuf(bo);
+      if (fd < 0)
+         return -1;
+   } else if (drmPrimeHandleToFD(bo->dev->fd, bo->handle,
+                                 DRM_CLOEXEC | DRM_RDWR, &fd)) {
       mesa_loge("drmPrimeHandleToFD() failed (err=%d)", errno);
       return -1;
    }
@@ -756,6 +778,9 @@ pan_kmod_bo_mmap(struct pan_kmod_bo *bo, int prot, int flags, void *host_addr)
    /* Don't bother trying an mmap() if it's not allowed. */
    if (bo->flags & PAN_KMOD_BO_FLAG_NO_MMAP)
       return MAP_FAILED;
+
+   if (bo->dev->ops->bo_mmap)
+      return bo->dev->ops->bo_mmap(bo, prot, flags, host_addr);
 
    mmap_offset = bo->dev->ops->bo_get_mmap_offset(bo);
    if (mmap_offset < 0)

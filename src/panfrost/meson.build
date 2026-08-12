@@ -35,6 +35,7 @@ subdir('shared')
 subdir('model')
 
 if with_gallium_panfrost or with_panfrost_vk or with_tools.contains('panfrost')
+   subdir('base')
    subdir('genxml')
    subdir('lib')
 endif

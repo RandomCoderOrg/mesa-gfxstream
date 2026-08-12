@@ -4,6 +4,7 @@
  */
 
 #include <string.h>
+#include <stdlib.h>
 #include <xf86drm.h>
 
 #include "util/cache_ops.h"
@@ -11,7 +12,9 @@
 #include "util/macros.h"
 #include "pan_kmod.h"
 #include "pan_kmod_backend.h"
+#include "kbase_kmod.h"
 
+#ifndef PAN_KMOD_KBASE_ONLY
 extern const struct pan_kmod_ops panfrost_kmod_ops;
 extern const struct pan_kmod_ops panthor_kmod_ops;
 
@@ -28,6 +31,7 @@ static const struct {
       &panthor_kmod_ops,
    },
 };
+#endif
 
 static void *
 default_zalloc(const struct pan_kmod_allocator *allocator, size_t size,
@@ -51,6 +55,25 @@ struct pan_kmod_dev *
 pan_kmod_dev_create(int fd, uint32_t flags,
                     const struct pan_kmod_allocator *allocator)
 {
+   const char *forced_backend = getenv("PAN_KMOD_BACKEND");
+   bool use_kbase = forced_backend ? !strcmp(forced_backend, "kbase")
+                                   : pan_kmod_kbase_fd_matches(fd);
+
+   if (use_kbase) {
+      const struct pan_kmod_driver drv_info = {
+         .version = { .major = 1, .minor = 999 },
+      };
+
+      if (!allocator)
+         allocator = &default_allocator;
+
+      return kbase_kmod_ops.dev_create(fd, flags, &drv_info, allocator);
+   }
+
+#ifdef PAN_KMOD_KBASE_ONLY
+   return NULL;
+#else
+
    drmVersionPtr version = drmGetVersion(fd);
    struct pan_kmod_dev *dev = NULL;
 
@@ -79,6 +102,7 @@ pan_kmod_dev_create(int fd, uint32_t flags,
 
    drmFreeVersion(version);
    return dev;
+#endif
 }
 
 void
@@ -152,6 +176,16 @@ pan_kmod_bo_import(struct pan_kmod_dev *dev, int fd)
 {
    struct pan_kmod_bo *bo = NULL;
    struct pan_kmod_bo **slot;
+
+   if (dev->ops->bo_import_dmabuf) {
+      size_t size = lseek(fd, 0, SEEK_END);
+      if (size == 0 || size == (size_t)-1) {
+         mesa_loge("invalid dmabuf size");
+         return NULL;
+      }
+
+      return dev->ops->bo_import_dmabuf(dev, fd, size);
+   }
 
    simple_mtx_lock(&dev->handle_to_bo.lock);
 

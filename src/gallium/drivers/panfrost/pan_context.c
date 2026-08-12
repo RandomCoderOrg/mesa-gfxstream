@@ -11,6 +11,7 @@
 
 #include "pan_bo.h"
 #include "pan_context.h"
+#include "kmod/kbase_kmod.h"
 #include "pan_minmax_cache.h"
 
 #include "util/format/u_format.h"
@@ -624,13 +625,16 @@ panfrost_destroy(struct pipe_context *pipe)
 
    util_dynarray_fini(&panfrost->global_buffers);
 
-   drmSyncobjDestroy(panfrost_device_fd(dev), panfrost->in_sync_obj);
-   if (panfrost->in_sync_fd != -1) {
-      close(panfrost->in_sync_fd);
-      panfrost->in_sync_fd = -1;
+   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+      pan_kmod_kbase_syncobj_destroy(dev->kmod.dev,
+                                     panfrost->syncobj_kbase);
+   } else {
+      drmSyncobjDestroy(panfrost_device_fd(dev), panfrost->in_sync_obj);
+      drmSyncobjDestroy(panfrost_device_fd(dev), panfrost->syncobj);
    }
 
-   drmSyncobjDestroy(panfrost_device_fd(dev), panfrost->syncobj);
+   if (panfrost->in_sync_fd != -1)
+      close(panfrost->in_sync_fd);
    ralloc_free(pipe);
 }
 
@@ -1029,6 +1033,12 @@ panfrost_fence_server_sync(struct pipe_context *pctx,
    int fd = -1;
    assert(!value);
 
+   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+      pan_kmod_kbase_syncobj_wait(dev->kmod.dev, f->kbase,
+                                  INT64_MAX - 1000000000LL);
+      return;
+   }
+
    ret = drmSyncobjExportSyncFile(panfrost_device_fd(dev), f->syncobj, &fd);
    assert(!ret);
 
@@ -1072,11 +1082,19 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
    /* Create a syncobj in a signaled state. Will be updated to point to the
     * last queued job out_sync every time we submit a new job.
     */
-   ret = drmSyncobjCreate(panfrost_device_fd(dev), DRM_SYNCOBJ_CREATE_SIGNALED,
-                          &ctx->syncobj);
-   if (ret) {
-      ralloc_free(ctx);
-      return NULL;
+   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+      ctx->syncobj_kbase = pan_kmod_kbase_syncobj_create(dev->kmod.dev);
+      if (!ctx->syncobj_kbase) {
+         ralloc_free(ctx);
+         return NULL;
+      }
+   } else {
+      ret = drmSyncobjCreate(panfrost_device_fd(dev),
+                             DRM_SYNCOBJ_CREATE_SIGNALED, &ctx->syncobj);
+      if (ret) {
+         ralloc_free(ctx);
+         return NULL;
+      }
    }
 
    gallium->screen = screen;
@@ -1178,8 +1196,10 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 
    /* Sync object/FD used for NATIVE_FENCE_FD. */
    ctx->in_sync_fd = -1;
-   ret = drmSyncobjCreate(panfrost_device_fd(dev), 0, &ctx->in_sync_obj);
-   assert(!ret);
+   if (!pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+      ret = drmSyncobjCreate(panfrost_device_fd(dev), 0, &ctx->in_sync_obj);
+      assert(!ret);
+   }
 
    ctx->printf.bo =
       panfrost_bo_create(dev, PAN_PRINTF_BUFFER_SIZE, 0, "Printf Buffer");

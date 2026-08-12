@@ -16,6 +16,9 @@
 #include "pan_job.h"
 #include "pan_precomp.h"
 #include "pan_trace.h"
+#include "kmod/kbase_kmod.h"
+
+#include <poll.h>
 
 #if PAN_ARCH >= 10
 #error "JM helpers are only used for gen < 10"
@@ -90,11 +93,18 @@ jm_submit_jc(struct panfrost_batch *batch, uint64_t first_job_desc,
    submit.requirements = reqs;
 
    if (ctx->in_sync_fd >= 0) {
-      ret = drmSyncobjImportSyncFile(panfrost_device_fd(dev), ctx->in_sync_obj,
-                                     ctx->in_sync_fd);
-      assert(!ret);
-
-      in_syncs[submit.in_sync_count++] = ctx->in_sync_obj;
+      if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+         struct pollfd pfd = { .fd = ctx->in_sync_fd, .events = POLLIN };
+         do {
+            ret = poll(&pfd, 1, -1);
+         } while (ret < 0 && errno == EINTR);
+         assert(ret > 0);
+      } else {
+         ret = drmSyncobjImportSyncFile(panfrost_device_fd(dev),
+                                        ctx->in_sync_obj, ctx->in_sync_fd);
+         assert(!ret);
+         in_syncs[submit.in_sync_count++] = ctx->in_sync_obj;
+      }
       close(ctx->in_sync_fd);
       ctx->in_sync_fd = -1;
    }
@@ -152,6 +162,10 @@ jm_submit_jc(struct panfrost_batch *batch, uint64_t first_job_desc,
    submit.bo_handles = (uint64_t)(uintptr_t)bo_handles;
    if (ctx->is_noop)
       ret = 0;
+   else if (pan_kmod_dev_is_kbase(dev->kmod.dev))
+      ret = pan_kmod_kbase_jm_submit(
+         dev->kmod.dev, submit.jc, submit.requirements, ctx->syncobj_kbase,
+         (int32_t *)(uintptr_t)submit.bo_handles, submit.bo_handle_count);
    else
       ret = pan_kmod_ioctl(panfrost_device_fd(dev), DRM_IOCTL_PANFROST_SUBMIT,
                            &submit);
@@ -163,8 +177,16 @@ jm_submit_jc(struct panfrost_batch *batch, uint64_t first_job_desc,
    /* Trace the job if we're doing that */
    if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
       /* Wait so we can get errors reported back */
-      ret = drmSyncobjWait(panfrost_device_fd(dev), &out_sync, 1, INT64_MAX,
-                           0, NULL);
+      if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+         ret = pan_kmod_kbase_syncobj_wait(dev->kmod.dev,
+                                            ctx->syncobj_kbase,
+                                            INT64_MAX - 1000000000LL)
+                  ? 0
+                  : -1;
+      } else {
+         ret = drmSyncobjWait(panfrost_device_fd(dev), &out_sync, 1,
+                              INT64_MAX, 0, NULL);
+      }
       if (ret)
          return errno;
 
@@ -1112,6 +1134,14 @@ GENX(jm_init_context)(struct panfrost_context *ctx)
 {
    PAN_TRACE_FUNC(PAN_TRACE_GL_JM);
 
+   struct panfrost_device *dev = pan_device(ctx->base.screen);
+
+   /* Kbase owns the Job Manager context behind /dev/mali0. */
+   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+      ctx->jm.handle = 0;
+      return 0;
+   }
+
    /* The default context is medium prio, so we use that one. */
    if (!(ctx->flags &
          (PIPE_CONTEXT_HIGH_PRIORITY | PIPE_CONTEXT_LOW_PRIORITY))) {
@@ -1119,7 +1149,6 @@ GENX(jm_init_context)(struct panfrost_context *ctx)
       return 0;
    }
 
-   struct panfrost_device *dev = pan_device(ctx->base.screen);
    enum drm_panfrost_jm_ctx_priority prio;
 
    if (ctx->flags & PIPE_CONTEXT_HIGH_PRIORITY)
@@ -1152,6 +1181,8 @@ GENX(jm_cleanup_context)(struct panfrost_context *ctx)
       return;
 
    struct panfrost_device *dev = pan_device(ctx->base.screen);
+   if (pan_kmod_dev_is_kbase(dev->kmod.dev))
+      return;
    struct drm_panfrost_jm_ctx_destroy args = {
       .handle = ctx->jm.handle,
    };

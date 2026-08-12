@@ -82,6 +82,7 @@ panfrost_ioctl_get_param(int fd, unsigned long request, void *arg)
    case DRM_PANFROST_PARAM_THREAD_TLS_ALLOC:
    case DRM_PANFROST_PARAM_AFBC_FEATURES:
    case DRM_PANFROST_PARAM_THREAD_FEATURES:
+   case DRM_PANFROST_PARAM_L2_FEATURES:
    case DRM_PANFROST_PARAM_MEM_FEATURES:
       /* lazy default, but works for the purposes of drm_shim */
       gp->value = 0x0;
@@ -93,6 +94,9 @@ panfrost_ioctl_get_param(int fd, unsigned long request, void *arg)
    case DRM_PANFROST_PARAM_MAX_THREADS:
    case DRM_PANFROST_PARAM_THREAD_MAX_WORKGROUP_SZ:
       gp->value = 256;
+      return 0;
+   case DRM_PANFROST_PARAM_ALLOWED_JM_CTX_PRIORITIES:
+      gp->value = BITFIELD_BIT(PANFROST_JM_CTX_PRIORITY_MEDIUM);
       return 0;
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_PANFROST_GET_PARAM %d\n", gp->param);
