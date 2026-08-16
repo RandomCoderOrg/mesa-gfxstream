@@ -44,6 +44,8 @@ flowchart LR
 | Resize and swapchain retirement | Pass | 20/20 independent processes resized 480x320 to 576x384, created a replacement with `oldSwapchain`, rendered afterward, and exited cleanly; Termux:X11 reported 69/69 sampled Present copies GPU-offloaded |
 | Lost X surface capability query | Fixed | Before the fix, a destroyed window returned `VK_SUCCESS` and extent 4294967295x4294967295; afterward 25/25 queries returned `VK_ERROR_SURFACE_LOST_KHR`, followed by a clean 60-frame regression at 62.89 FPS |
 | Live surface loss and error publication | Fixed | Swapchain error state is atomic across presentation and application threads; 50/50 live windows destroyed after three Presents returned `VK_ERROR_SURFACE_LOST_KHR` and exited cleanly |
+| Present serial wrap | Pass | A temporary test build initialized the counter at `0xfffffffb`; 20 Presents crossed `0xffffffff` to `0`, reused images, and exited cleanly, after which the initializer was restored to zero |
+| Abrupt X transport loss | Pass | 25/25 clients shut down their XCB socket after three Presents, received `VK_ERROR_SURFACE_LOST_KHR`, joined cleanly, and left the Termux:X11 server and negotiated protocol alive |
 
 ## Promotion gates still open
 
@@ -55,9 +57,10 @@ flowchart LR
    signals.
 2. Advertise only presentation modes whose semantics are implemented. MAILBOX
    needs real queued-frame replacement; until then FIFO is the release target.
-3. Correctly handle Present serial wrap and abrupt X connection teardown under
-   repeated stress. Synchronous and live window loss, resize, and
-   retired-swapchain replacement now pass deterministic gates.
+3. Repeat the lifecycle suite under compositor-driven resize and shutdown, not
+   only deterministic probes. Direct resize, retired swapchains, synchronous
+   and live window loss, serial wrap, and abrupt per-client X transport loss
+   now pass their first gates.
 4. Move the protocol probe and WSI failure reason into automatic profile
    selection so a mismatched or older server selects another graphics route
    before a desktop is launched.

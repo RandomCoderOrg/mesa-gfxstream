@@ -49,6 +49,7 @@ cc -O2 -Wall -Wextra vulkan-xcb-present.c -o vulkan-xcb-present \
 ./vulkan-xcb-present --frames 8 --resize-after-frames 3 --hold-ms 0
 ./vulkan-xcb-present --destroy-window-before-capabilities --hold-ms 0
 ./vulkan-xcb-present --frames 4 --destroy-window-after-frames 3 --hold-ms 0
+./vulkan-xcb-present --frames 4 --disconnect-x-after-frames 3 --hold-ms 0
 ```
 
 A passing run must satisfy all of these conditions:
@@ -82,6 +83,11 @@ server failure all fail the gate.
 swapchain and Present worker are active. The next bounded image acquire must
 return `VK_ERROR_SURFACE_LOST_KHR`, and full Vulkan/X teardown must still reach
 `PASS stage=clean-exit`.
+
+`--disconnect-x-after-frames` shuts down only the probe's XCB transport while
+leaving its connection object and the server alive. The worker must wake, the
+bounded acquire must return `VK_ERROR_SURFACE_LOST_KHR`, teardown must join,
+and other X clients must remain functional.
 
 ## AHardwareBuffer transport
 

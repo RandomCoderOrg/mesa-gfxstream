@@ -152,6 +152,23 @@
       "postStressRegressionFrames": 60,
       "postStressRegressionFps": 58.23,
       "postStressRegressionCleanExit": true
+    },
+    "presentSerialWrap": {
+      "temporaryInitialSerial": "0xfffffffb",
+      "presentFrames": 20,
+      "crossedSerialZero": true,
+      "cleanExit": true,
+      "productionInitializerRestored": true
+    },
+    "xConnectionLoss": {
+      "method": "shutdown-probe-xcb-socket",
+      "processes": 25,
+      "passes": 25,
+      "presentsBeforeDisconnect": 3,
+      "result": "VK_ERROR_SURFACE_LOST_KHR",
+      "cleanExits": 25,
+      "xServerAliveAfterward": true,
+      "protocolCompatibleAfterward": true
     }
   },
   "qualification": "negotiated-explicit-acquire-pass",

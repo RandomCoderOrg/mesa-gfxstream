@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <vulkan/vulkan.h>
 #include <xcb/xcb.h>
@@ -61,6 +62,7 @@ int main(int argc, char **argv)
     uint64_t create_destroy_cycles = 0;
     uint64_t resize_after_frames = 0;
     uint64_t destroy_window_after_frames = 0;
+    uint64_t disconnect_x_after_frames = 0;
     int destroy_window_before_capabilities = 0;
     for (int index = 1; index < argc; ++index) {
         if (strcmp(argv[index], "--hold-ms") == 0 && index + 1 < argc) {
@@ -106,13 +108,25 @@ int main(int argc, char **argv)
                         (unsigned long long)destroy_window_after_frames);
                 return 2;
             }
+        } else if (strcmp(argv[index], "--disconnect-x-after-frames") == 0 &&
+                   index + 1 < argc) {
+            disconnect_x_after_frames =
+                parse_u64(argv[++index], "--disconnect-x-after-frames");
+            if (disconnect_x_after_frames == 0 ||
+                disconnect_x_after_frames > 100000) {
+                fprintf(stderr,
+                        "FAIL stage=arguments option=--disconnect-x-after-frames value=%llu\n",
+                        (unsigned long long)disconnect_x_after_frames);
+                return 2;
+            }
         } else {
             fprintf(stderr,
                     "usage: %s [--hold-ms MILLISECONDS] [--frames COUNT] "
                     "[--create-destroy-cycles COUNT] "
                     "[--resize-after-frames COUNT] "
                     "[--destroy-window-before-capabilities] "
-                    "[--destroy-window-after-frames COUNT]\n",
+                    "[--destroy-window-after-frames COUNT] "
+                    "[--disconnect-x-after-frames COUNT]\n",
                     argv[0]);
             return 2;
         }
@@ -129,6 +143,22 @@ int main(int argc, char **argv)
                 "FAIL stage=arguments option=--destroy-window-after-frames value=%llu frames=%llu\n",
                 (unsigned long long)destroy_window_after_frames,
                 (unsigned long long)frame_count);
+        return 2;
+    }
+    if (disconnect_x_after_frames > frame_count) {
+        fprintf(stderr,
+                "FAIL stage=arguments option=--disconnect-x-after-frames value=%llu frames=%llu\n",
+                (unsigned long long)disconnect_x_after_frames,
+                (unsigned long long)frame_count);
+        return 2;
+    }
+    int special_mode_count = (create_destroy_cycles != 0) +
+        (resize_after_frames != 0) + destroy_window_before_capabilities +
+        (destroy_window_after_frames != 0) +
+        (disconnect_x_after_frames != 0);
+    if (special_mode_count > 1) {
+        fprintf(stderr,
+                "FAIL stage=arguments reason=multiple-special-modes\n");
         return 2;
     }
 
@@ -490,17 +520,30 @@ int main(int argc, char **argv)
         CHECK_VK(vkQueuePresentKHR(queue, &present), "queue-present");
         CHECK_VK(vkQueueWaitIdle(queue), "queue-idle");
 
-        if (frame + 1 == destroy_window_after_frames) {
-            xcb_void_cookie_t destroy_cookie =
-                xcb_destroy_window_checked(connection, window);
-            xcb_generic_error_t *destroy_error =
-                xcb_request_check(connection, destroy_cookie);
-            if (destroy_error != NULL) {
-                fprintf(stderr,
-                        "FAIL stage=destroy-live-window xcb_error=%u\n",
-                        destroy_error->error_code);
-                free(destroy_error);
-                return 1;
+        if (frame + 1 == destroy_window_after_frames ||
+            frame + 1 == disconnect_x_after_frames) {
+            const char *loss_stage = "live-surface-loss";
+            if (frame + 1 == destroy_window_after_frames) {
+                xcb_void_cookie_t destroy_cookie =
+                    xcb_destroy_window_checked(connection, window);
+                xcb_generic_error_t *destroy_error =
+                    xcb_request_check(connection, destroy_cookie);
+                if (destroy_error != NULL) {
+                    fprintf(stderr,
+                            "FAIL stage=destroy-live-window xcb_error=%u\n",
+                            destroy_error->error_code);
+                    free(destroy_error);
+                    return 1;
+                }
+            } else {
+                loss_stage = "x-connection-loss";
+                int xcb_fd = xcb_get_file_descriptor(connection);
+                if (xcb_fd < 0 || shutdown(xcb_fd, SHUT_RDWR) != 0) {
+                    fprintf(stderr,
+                            "FAIL stage=disconnect-x-transport errno=%d\n",
+                            errno);
+                    return 1;
+                }
             }
 
             struct timespec event_delivery = {
@@ -515,8 +558,8 @@ int main(int argc, char **argv)
                 &lost_image_index);
             if (lost_result != VK_ERROR_SURFACE_LOST_KHR) {
                 fprintf(stderr,
-                        "FAIL stage=live-surface-loss expected=%d actual=%d\n",
-                        VK_ERROR_SURFACE_LOST_KHR, lost_result);
+                        "FAIL stage=%s expected=%d actual=%d\n",
+                        loss_stage, VK_ERROR_SURFACE_LOST_KHR, lost_result);
                 return 1;
             }
 
@@ -531,7 +574,7 @@ int main(int argc, char **argv)
             vkDestroySurfaceKHR(instance, surface, NULL);
             vkDestroyInstance(instance, NULL);
             xcb_disconnect(connection);
-            printf("PASS stage=live-surface-loss frame=%llu result=%d\n",
+            printf("PASS stage=%s frame=%llu result=%d\n", loss_stage,
                    (unsigned long long)(frame + 1), lost_result);
             printf("PASS stage=clean-exit\n");
             return 0;
