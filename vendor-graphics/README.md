@@ -37,6 +37,16 @@ vendor bridge when a writable render node exists and otherwise proposes the
 vendor Vulkan AHardwareBuffer route only when its prerequisites are visible.
 Every listed runtime probe must still pass on the current Android build.
 
+## Runtime profile
+
+The packaged `vendor-graphics/runtime/bin/udroid-gpu-run` wrapper applies the
+matched Mesa/Zink, libhybris, sysvk, and WSI environment to one command. It
+does not edit the guest or replace distribution libraries. Android's normal
+Vulkan HAL lookup remains first; when that lookup is unavailable in a rootless
+guest, the wrapper supplies an explicit fallback only if exactly one readable
+64-bit HAL exists in the standard vendor, ODM, or system hardware directories.
+An ambiguous device is left to normal lookup or an explicit diagnostic choice.
+
 ## WSI qualification
 
 After the selected runtime profile has configured `DISPLAY`, Vulkan, and the
