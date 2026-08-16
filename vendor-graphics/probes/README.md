@@ -101,6 +101,25 @@ The probe must be linked through the same libhybris AHardwareBuffer provider as
 the runtime. Provider discovery is a separate gate: a library existing on disk
 does not prove that its Bionic ABI and TLS behavior are safe in the guest.
 
+## Present offload statistics
+
+`x11-present-stats.c` reads the versioned `_UDROID_X11_PRESENT_STATS` root
+property published by a compatible Lorie server. It reports cumulative GPU
+copy attempts, successful offloads, and mutually exclusive fallback reasons.
+The server snapshots its in-memory counters with the existing five-second
+frame timer, avoiding per-frame property traffic.
+
+```sh
+cc -O2 -Wall -Wextra -Werror x11-present-stats.c \
+  -o x11-present-stats -lxcb
+DISPLAY=:0 ./x11-present-stats
+```
+
+`consistent=true` requires every attempt to be accounted for by exactly one
+outcome. Qualification compares snapshots before and after a workload; an AHB
+profile passes the offload gate only when the attempt delta is nonzero and the
+offload delta equals it.
+
 Run ten iterations across all default widths with:
 
 ```sh
