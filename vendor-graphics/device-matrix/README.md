@@ -12,7 +12,9 @@ Every generated baseline must validate against `schema-v1.json`. A baseline is
 immutable evidence for one Android build fingerprint; re-running after an OS
 update produces a new `deviceId` and a separate qualification run.
 
-WSI suite reports validate against `wsi-qualification-schema-v1.json`. Keep a
-report separate from its discovery baseline: the same Android build can be
-tested against multiple runtime revisions without rewriting the original
-device evidence.
+WSI suite reports using the original lifecycle-only contract validate against
+`wsi-qualification-schema-v1.json`. New reports validate against
+`wsi-qualification-schema-v2.json`, which additionally requires observable
+GPU Present-offload deltas. Keep a report separate from its discovery
+baseline: the same Android build can be tested against multiple runtime
+revisions without rewriting the original device evidence.

@@ -46,11 +46,15 @@ WSI layer, run the same lifecycle suite on every device/build pair:
 vendor-graphics/tools/run-wsi-qualification.sh \
   --present-probe /path/to/vulkan-xcb-present \
   --protocol-probe /path/to/x11-buffer-transport-protocol \
+  --stats-probe /path/to/x11-present-stats \
   --profile smoke \
   --output wsi-smoke.json
 ```
 
 Use `smoke` when admitting a new device and `full` before promoting a profile.
 The result is machine-readable JSON and points to the complete raw transcript.
+The suite snapshots the server's cumulative Present counters before and after
+the workload; AHardwareBuffer qualification requires a non-zero attempt delta
+with every attempted copy GPU-offloaded.
 The suite does not select or modify drivers; that boundary lets one probe
 contract compare standard DRM, vendor Vulkan, and future graphics routes.

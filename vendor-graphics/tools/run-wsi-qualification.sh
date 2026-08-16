@@ -12,6 +12,7 @@ Linux guest.
 Options:
   --present-probe PATH   vulkan-xcb-present binary
   --protocol-probe PATH  x11-buffer-transport-protocol binary
+  --stats-probe PATH     x11-present-stats binary
   --profile NAME         smoke or full (default: smoke)
   --output FILE          JSON result (default: stdout)
   --log FILE             raw probe transcript
@@ -23,6 +24,7 @@ EOF
 
 present_probe=./vulkan-xcb-present
 protocol_probe=./x11-buffer-transport-protocol
+stats_probe=./x11-present-stats
 profile=smoke
 output=-
 log=
@@ -37,6 +39,11 @@ while (($#)); do
         --protocol-probe)
             (($# >= 2)) || { usage; exit 2; }
             protocol_probe=$2
+            shift 2
+            ;;
+        --stats-probe)
+            (($# >= 2)) || { usage; exit 2; }
+            stats_probe=$2
             shift 2
             ;;
         --profile)
@@ -96,6 +103,10 @@ esac
     echo "Protocol probe is not executable: $protocol_probe" >&2
     exit 3
 }
+[[ -x $stats_probe ]] || {
+    echo "Present statistics probe is not executable: $stats_probe" >&2
+    exit 3
+}
 
 if [[ -z $log ]]; then
     if [[ $output == - ]]; then
@@ -152,6 +163,15 @@ printf 'PROTOCOL %s\n' "$protocol_json" >> "$log"
 [[ $protocol_json == *'"compatible":true'* ]] || fail protocol-compatible
 printf 'PASS stage=protocol\n' >&2
 
+stats_before_json=$($stats_probe 2>>"$log") || fail present-stats-before
+printf 'PRESENT_STATS_BEFORE %s\n' "$stats_before_json" >> "$log"
+[[ $stats_before_json == *'"consistent":true'* ]] || fail present-stats-before-consistency
+stats_before_attempts=$(sed -n 's/.*"attempts":\([0-9][0-9]*\).*/\1/p' <<<"$stats_before_json")
+stats_before_offloads=$(sed -n 's/.*"offloads":\([0-9][0-9]*\).*/\1/p' <<<"$stats_before_json")
+[[ -n $stats_before_attempts && -n $stats_before_offloads ]] || fail present-stats-before-parse
+printf 'PASS stage=present-stats-before attempts=%s offloads=%s\n' \
+    "$stats_before_attempts" "$stats_before_offloads" >&2
+
 run_probe steady "$present_probe" --frames "$steady_frames" --hold-ms 0
 [[ $last_output == *"PASS stage=present frames=$steady_frames"* ]] || fail steady-present
 gpu=$(sed -n 's/^PASS stage=physical-device device=\(.*\) api=.*/\1/p' <<<"$last_output" | head -1)
@@ -183,12 +203,35 @@ repeat_probe "$connection_loss_processes" x-connection-loss \
     'PASS stage=x-connection-loss' \
     --frames 4 --disconnect-x-after-frames 3 --hold-ms 0
 
+# Lorie publishes cumulative counters on its existing five-second frame timer.
+# Poll for at most eight seconds so qualification does not depend on logcat or
+# a fixed phase relationship with that timer.
+stats_after_json=
+stats_after_attempts=$stats_before_attempts
+stats_after_offloads=$stats_before_offloads
+for ((iteration = 1; iteration <= 32; ++iteration)); do
+    stats_after_json=$($stats_probe 2>>"$log") || fail present-stats-after
+    [[ $stats_after_json == *'"consistent":true'* ]] || fail present-stats-after-consistency
+    stats_after_attempts=$(sed -n 's/.*"attempts":\([0-9][0-9]*\).*/\1/p' <<<"$stats_after_json")
+    stats_after_offloads=$(sed -n 's/.*"offloads":\([0-9][0-9]*\).*/\1/p' <<<"$stats_after_json")
+    [[ -n $stats_after_attempts && -n $stats_after_offloads ]] || fail present-stats-after-parse
+    ((stats_after_attempts > stats_before_attempts)) && break
+    sleep 0.25
+done
+printf 'PRESENT_STATS_AFTER %s\n' "$stats_after_json" >> "$log"
+present_attempts_delta=$((stats_after_attempts - stats_before_attempts))
+present_offloads_delta=$((stats_after_offloads - stats_before_offloads))
+((present_attempts_delta > 0)) || fail present-stats-no-attempts
+((present_offloads_delta == present_attempts_delta)) || fail present-stats-fallback
+printf 'PASS stage=present-offload attempts_delta=%s offloads_delta=%s\n' \
+    "$present_attempts_delta" "$present_offloads_delta" >&2
+
 suite_duration_seconds=$((SECONDS - suite_start))
 generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 result=$(printf '%s\n' \
     '{' \
-    '  "schema": 1,' \
+    '  "schema": 2,' \
     "  \"generatedAt\": \"$generated_at\"," \
     "  \"profile\": \"$profile\"," \
     "  \"gpu\": \"$gpu\"," \
@@ -202,7 +245,14 @@ result=$(printf '%s\n' \
     "    \"resizeRetirement\": {\"processes\": $resize_processes, \"passes\": $resize_processes}," \
     "    \"lostCapabilityQuery\": {\"processes\": $lost_query_processes, \"passes\": $lost_query_processes}," \
     "    \"liveSurfaceLoss\": {\"processes\": $live_loss_processes, \"passes\": $live_loss_processes}," \
-    "    \"xConnectionLoss\": {\"processes\": $connection_loss_processes, \"passes\": $connection_loss_processes}" \
+    "    \"xConnectionLoss\": {\"processes\": $connection_loss_processes, \"passes\": $connection_loss_processes}," \
+    '    "presentOffload": {' \
+    "      \"before\": $stats_before_json," \
+    "      \"after\": $stats_after_json," \
+    "      \"attemptsDelta\": $present_attempts_delta," \
+    "      \"offloadsDelta\": $present_offloads_delta," \
+    '      "pass": true' \
+    '    }' \
     '  }' \
     '}')
 
