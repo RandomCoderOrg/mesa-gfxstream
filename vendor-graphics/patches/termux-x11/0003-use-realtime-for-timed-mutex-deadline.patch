@@ -1,0 +1,14 @@
+--- a/lorie.h
++++ b/lorie.h
+@@ -58,7 +58,10 @@ static inline __always_inline void lorie_mutex_lock(pthread_mutex_t* mutex, pid_
+     // we will simply reinitialize it.
+     struct timespec ts = {0};
+     while(true) {
+-        clock_gettime(CLOCK_MONOTONIC, &ts);
++        /* pthread_mutex_timedlock() interprets its absolute deadline against
++         * CLOCK_REALTIME. A CLOCK_MONOTONIC timestamp is already in the past
++         * on Android and turns contention into a CPU-burning timeout loop. */
++        clock_gettime(CLOCK_REALTIME, &ts);
+ 
+         // 33 msec is enough to complete any drawing operation on both X server and renderer side
+         // In the case if mutex is locked most likely other thread died with the mutex locked

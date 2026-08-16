@@ -65,8 +65,23 @@
         "median": 29,
         "maximum": 39
       }
+    },
+    "lorieMutexClock": {
+      "cycles": 25,
+      "passes": 25,
+      "holdMilliseconds": 50,
+      "monotonicTimeouts": {
+        "minimum": 6405,
+        "median": 7238,
+        "maximum": 9585
+      },
+      "averageWaitingThreadCpuMicroseconds": {
+        "monotonicDeadline": 49760,
+        "realtimeDeadline": 190
+      },
+      "cpuReductionPercent": 99.6
     }
   },
-  "qualification": "explicit-acquire-pass",
-  "nextGate": "release-sync-and-protocol-version"
+  "qualification": "explicit-acquire-and-lock-clock-pass",
+  "nextGate": "async-release-and-protocol-version"
 }

@@ -17,6 +17,8 @@ file.
 | AHB Vulkan XCB Present | Pass | Red frame, clean exit, Termux:X11 reports 1/1 copies GPU-offloaded |
 | Vulkan sync-file import | Pass | Both the xshmfence control and a vendor Vulkan `sync_file` import through DRI3 |
 | Explicit acquire ordering | Pass | 25/25 Presents stayed blocked for 250–252 ms, then completed 16–39 ms after producer release |
+| Present source release ordering | Pass | Termux:X11 completes its GLES source read before IdleNotify makes the pixmap reusable |
+| Renderer lock deadline | Pass | 25/25; matching ~50 ms wall wait, average waiting CPU reduced from 49,760 us to 190 us (99.6%) |
 | Current provider CPU readback | Open regression | Transport succeeds, but the full map/readback probe reached a page boundary outside its returned mapping; WSI does not CPU-map these display targets |
 | Mesa Zink | Blocked | Jammy Mesa rejects missing `logicOp`, `fillModeNonSolid`, and `shaderClipDistance` features |
 | Desktop compositor | Not qualified | Requires a matched Zink build after the feature-policy issue is resolved |
@@ -40,6 +42,8 @@ and compatibility fallback.
 - Use `libnativewindow.so` for AHardwareBuffer entry points on this build.
 - Keep explicit acquire synchronization paired: enable it only with the
   matching Termux:X11 sync-file backend, otherwise retain the CPU fence wait.
+- Use `CLOCK_REALTIME` deadlines with `pthread_mutex_timedlock`; a monotonic
+  absolute timestamp causes immediate timeout spinning on Bionic.
 - Keep the AHardwareBuffer producer alive until the consumer has completed its
   import and presentation work.
 - Allocate an RGBA-capable physical AHardwareBuffer and carry the guest's RGBA

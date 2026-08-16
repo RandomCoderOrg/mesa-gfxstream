@@ -33,21 +33,34 @@ flowchart LR
 | Rapid lifecycle soak | Pass | 25/25 image views and swapchains reached clean exit; 25/25 Present copies were GPU-offloaded in an isolated log run |
 | Narrow AHB provider | Pass | `libnativewindow.so` passed 9/9 AHB transport cases on Exynos 9611; `libandroid.so` aborted while loading its framework/crypto dependency graph |
 | Explicit acquire ordering | Pass | 25/25 delayed Vulkan sync-file Presents withheld completion before release and completed 16–39 ms after release |
+| Present source release ordering | Pass | Termux:X11 waits for its GLES copy fence before emitting IdleNotify; xMeM passes no idle fence, so Present's standard pixmap-reuse guarantee applies |
+| Contended renderer lock clock | Fixed | 25/25 on-device probes passed; waiting-thread CPU fell from 49,760 us to 190 us on average while lock latency remained approximately 50 ms |
 
 ## Promotion gates still open
 
 1. Promote the validated explicit acquire fence from an opt-in only after the
    paired WSI/server protocol is versioned and runtime probing has selected a
    matching server. The CPU wait remains the mismatch fallback.
-2. Carry the display-consumer release fence back to image reuse. Present
-   Complete and Idle currently provide lifecycle ordering, but the private
-   transport does not yet return an Android release `sync_file` payload.
+2. Replace the server's synchronous GLES fence wait with an asynchronous
+   `EGL_ANDROID_native_fence_sync` wait without weakening Present IdleNotify's
+   pixmap-reuse guarantee. The source is safe today, but the renderer holds the
+   shared destination lock while waiting; an async design must also prevent X
+   CPU writes to root or redirected destinations until that native fence
+   signals.
 3. Advertise only presentation modes whose semantics are implemented. MAILBOX
    needs real queued-frame replacement; until then FIFO is the release target.
 4. Correctly handle resize, surface loss, retired swapchains, Present serial
    wrap, and X connection teardown under repeated stress.
 5. Version the paired private transport and reject mismatched WSI/server builds
    with a clear diagnostic rather than corrupted output.
+
+The synchronization model follows Android's acquire/release fence contract:
+producers must not reuse a buffer until its consumer is done. In this copy-based
+X11 path, delayed Present IdleNotify is the current release signal. Android's
+native fence API is the planned optimization mechanism, not permission to emit
+IdleNotify early. See the
+[AOSP synchronization framework](https://source.android.com/docs/core/graphics/sync)
+and the pinned Xorg `presentproto.txt` in the Termux:X11 source.
 
 ## Qualification sequence
 

@@ -118,3 +118,26 @@ DISPLAY=:0 ./x11-present-sync-file-wait
 Both `completed_early=false` and `completed_after_release=true` are mandatory.
 This catches a server that accepts a sync-file FD but triggers or ignores it
 before the producer has completed rendering.
+
+## Termux:X11 mutex clock contention
+
+`lorie-mutex-clock.c` reproduces the process-shared renderer lock's timed wait
+without starting a desktop. It holds one recursive mutex for 50 ms, then
+compares the current `CLOCK_MONOTONIC` deadline with the `CLOCK_REALTIME`
+deadline required by `pthread_mutex_timedlock()`.
+
+Build this probe with the Android NDK and run it directly in the Android app or
+shell domain:
+
+```sh
+aarch64-linux-android24-clang -std=c11 -O2 -Wall -Wextra -Werror -pthread \
+  lorie-mutex-clock.c -o lorie-mutex-clock
+./lorie-mutex-clock
+```
+
+A passing result requires both cases to acquire the lock at approximately the
+same wall time while the realtime case performs fewer timeout retries and
+consumes less waiting-thread CPU. On the Exynos 9611 qualification device, 25
+of 25 runs passed: the old deadline produced 6,405-9,585 immediate timeouts and
+used 49,760 us of CPU on average; the corrected deadline produced one real
+timeout and used 190 us on average, a 99.6% reduction.
