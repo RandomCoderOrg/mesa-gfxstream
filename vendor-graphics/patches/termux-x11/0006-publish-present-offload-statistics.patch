@@ -17,7 +17,7 @@ diff --git a/lorie/src/main/cpp/lorie/InitOutput.c b/lorie/src/main/cpp/lorie/In
  
  enum {
      UDROID_X11_TRANSPORT_AHB_SOCKET = 1U << 0,
-@@ -125,7 +126,45 @@
+@@ -125,7 +126,41 @@
      UDROID_X11_TRANSPORT_SYNC_FILE_ACQUIRE = 1U << 2,
      UDROID_X11_TRANSPORT_GPU_COPY = 1U << 3,
  };
@@ -54,16 +54,12 @@ diff --git a/lorie/src/main/cpp/lorie/InitOutput.c b/lorie/src/main/cpp/lorie/In
 +                                sizeof(stats) / sizeof(stats[0]),
 +                                stats, FALSE) != Success)
 +        log(ERROR, "Failed to publish uDroid X11 Present statistics");
-+    else if (presentStats.attempts)
-+        log(INFO, "Published uDroid X11 Present statistics: %llu/%llu offloaded",
-+            (unsigned long long) presentStats.offloads,
-+            (unsigned long long) presentStats.attempts);
 +}
 +
  static void loriePublishBufferTransportCapabilities(unused CallbackListPtr *callbacks,
                                                      unused void *closure, void *data) {
      ScreenPtr pScreen = data;
-@@ -147,6 +186,8 @@
+@@ -147,6 +182,8 @@
                                  sizeof(protocol) / sizeof(protocol[0]),
                                  protocol, FALSE) != Success)
          log(ERROR, "Failed to publish uDroid X11 buffer transport capabilities");
@@ -72,7 +68,7 @@ diff --git a/lorie/src/main/cpp/lorie/InitOutput.c b/lorie/src/main/cpp/lorie/In
  }
  
  // Owned by the activity process, handed to us over the connection socket. Points at a placeholder until
-@@ -556,13 +597,51 @@
+@@ -556,13 +593,51 @@
  }
  
  static uint64_t gpuCopyAttempts = 0, gpuCopyOffloads = 0;
@@ -125,7 +121,7 @@ diff --git a/lorie/src/main/cpp/lorie/InitOutput.c b/lorie/src/main/cpp/lorie/In
      pvfb->state->renderedFrames = 0;
      gpuCopyAttempts = gpuCopyOffloads = 0;
      return 5000;
-@@ -914,19 +993,19 @@
+@@ -914,19 +989,19 @@
      uint32_t writeIndex, readIndex;
  
      if (pvfb->gpuPresentDisabled || pvfb->root.legacyDrawing) {
@@ -148,7 +144,7 @@ diff --git a/lorie/src/main/cpp/lorie/InitOutput.c b/lorie/src/main/cpp/lorie/In
          return FALSE;
      }
      priv = LORIE_PIXMAP_PRIV_FROM_PIXMAP(pixmap);
-@@ -943,14 +1022,14 @@
+@@ -943,14 +1018,14 @@
      }
  
      if (numRects <= 0 || numRects > LORIE_GPU_COPY_MAX_RECTS) {
@@ -165,7 +161,7 @@ diff --git a/lorie/src/main/cpp/lorie/InitOutput.c b/lorie/src/main/cpp/lorie/In
          return FALSE;
      }
  
-@@ -985,8 +1064,7 @@
+@@ -985,8 +1060,7 @@
      pthread_cond_signal(rendererCond);
  
      *out_serial = entry->serial;
