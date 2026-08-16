@@ -36,3 +36,21 @@ This result is a probe plan, not approval. It chooses standard DRM ahead of the
 vendor bridge when a writable render node exists and otherwise proposes the
 vendor Vulkan AHardwareBuffer route only when its prerequisites are visible.
 Every listed runtime probe must still pass on the current Android build.
+
+## WSI qualification
+
+After the selected runtime profile has configured `DISPLAY`, Vulkan, and the
+WSI layer, run the same lifecycle suite on every device/build pair:
+
+```sh
+vendor-graphics/tools/run-wsi-qualification.sh \
+  --present-probe /path/to/vulkan-xcb-present \
+  --protocol-probe /path/to/x11-buffer-transport-protocol \
+  --profile smoke \
+  --output wsi-smoke.json
+```
+
+Use `smoke` when admitting a new device and `full` before promoting a profile.
+The result is machine-readable JSON and points to the complete raw transcript.
+The suite does not select or modify drivers; that boundary lets one probe
+contract compare standard DRM, vendor Vulkan, and future graphics routes.

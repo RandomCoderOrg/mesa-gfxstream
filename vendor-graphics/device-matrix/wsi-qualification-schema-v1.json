@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/RandomCoderOrg/tensor-g1-proot-gpu/vendor-graphics/device-matrix/wsi-qualification-schema-v1.json",
+  "title": "uDroid Vulkan X11 WSI qualification result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "generatedAt", "profile", "gpu", "vulkanApi",
+    "suiteDurationSeconds", "rawLog", "protocol", "results"
+  ],
+  "properties": {
+    "schema": { "const": 1 },
+    "generatedAt": { "type": "string" },
+    "profile": { "enum": ["smoke", "full"] },
+    "gpu": { "type": "string", "minLength": 1 },
+    "vulkanApi": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "suiteDurationSeconds": { "type": "integer", "minimum": 0 },
+    "rawLog": { "type": "string", "minLength": 1 },
+    "protocol": {
+      "type": "object",
+      "required": [
+        "connected", "propertyPresent", "version", "capabilities",
+        "ahbSocket", "rgba", "syncFileAcquire", "gpuCopy",
+        "bgraModifier", "rgbaModifier", "compatible"
+      ],
+      "properties": {
+        "connected": { "const": true },
+        "propertyPresent": { "const": true },
+        "version": { "const": 1 },
+        "capabilities": { "type": "integer", "minimum": 0 },
+        "ahbSocket": { "const": true },
+        "rgba": { "const": true },
+        "syncFileAcquire": { "const": true },
+        "gpuCopy": { "const": true },
+        "bgraModifier": { "type": "integer", "minimum": 1 },
+        "rgbaModifier": { "type": "integer", "minimum": 1 },
+        "compatible": { "const": true }
+      },
+      "additionalProperties": false
+    },
+    "results": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "steadyPresent", "immediateTeardown", "resizeRetirement",
+        "lostCapabilityQuery", "liveSurfaceLoss", "xConnectionLoss"
+      ],
+      "properties": {
+        "steadyPresent": {
+          "type": "object",
+          "required": ["frames", "durationMs", "fps", "pass"],
+          "properties": {
+            "frames": { "type": "integer", "minimum": 1 },
+            "durationMs": { "type": "number", "exclusiveMinimum": 0 },
+            "fps": { "type": "number", "exclusiveMinimum": 0 },
+            "pass": { "const": true }
+          },
+          "additionalProperties": false
+        },
+        "immediateTeardown": { "$ref": "#/$defs/cyclePass" },
+        "resizeRetirement": { "$ref": "#/$defs/processPass" },
+        "lostCapabilityQuery": { "$ref": "#/$defs/processPass" },
+        "liveSurfaceLoss": { "$ref": "#/$defs/processPass" },
+        "xConnectionLoss": { "$ref": "#/$defs/processPass" }
+      }
+    }
+  },
+  "$defs": {
+    "cyclePass": {
+      "type": "object",
+      "required": ["cycles", "pass"],
+      "properties": {
+        "cycles": { "type": "integer", "minimum": 1 },
+        "pass": { "const": true }
+      },
+      "additionalProperties": false
+    },
+    "processPass": {
+      "type": "object",
+      "required": ["processes", "passes"],
+      "properties": {
+        "processes": { "type": "integer", "minimum": 1 },
+        "passes": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

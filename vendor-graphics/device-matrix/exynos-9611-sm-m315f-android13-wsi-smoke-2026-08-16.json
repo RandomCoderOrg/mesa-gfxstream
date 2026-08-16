@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-08-16T09:40:13Z",
+  "profile": "smoke",
+  "gpu": "Mali-G72",
+  "vulkanApi": "1.1.213",
+  "suiteDurationSeconds": 21,
+  "rawLog": "/root/udroid-gpu-test/samsung-wsi-smoke.log",
+  "protocol": {
+    "connected": true,
+    "propertyPresent": true,
+    "version": 1,
+    "capabilities": 15,
+    "ahbSocket": true,
+    "rgba": true,
+    "syncFileAcquire": true,
+    "gpuCopy": true,
+    "bgraModifier": 1255,
+    "rgbaModifier": 1257,
+    "compatible": true
+  },
+  "results": {
+    "steadyPresent": {
+      "frames": 30,
+      "durationMs": 477.805,
+      "fps": 62.79,
+      "pass": true
+    },
+    "immediateTeardown": {
+      "cycles": 20,
+      "pass": true
+    },
+    "resizeRetirement": {
+      "processes": 3,
+      "passes": 3
+    },
+    "lostCapabilityQuery": {
+      "processes": 3,
+      "passes": 3
+    },
+    "liveSurfaceLoss": {
+      "processes": 5,
+      "passes": 5
+    },
+    "xConnectionLoss": {
+      "processes": 5,
+      "passes": 5
+    }
+  }
+}
