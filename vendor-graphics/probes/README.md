@@ -9,17 +9,24 @@ discovery, allocation, import, synchronization, presentation, or API support.
 `vulkan-xcb-present.c` creates a Vulkan XCB swapchain, clears one image red,
 presents it, and keeps the window alive briefly. It verifies the complete
 vendor Vulkan to X11 WSI path without involving Mesa, Zink, or a compositor.
+The default six-second hold supports visual inspection. Use `--hold-ms 0` for
+repeatable lifecycle soaks that exercise creation, presentation, and teardown
+without paying the visual hold cost on every cycle.
 
 Build it in an AArch64 glibc guest with Vulkan and XCB development headers:
 
 ```sh
 cc -O2 -Wall -Wextra vulkan-xcb-present.c -o vulkan-xcb-present \
   -lvulkan -lxcb
+
+./vulkan-xcb-present --hold-ms 0
 ```
 
 A passing run must satisfy all of these conditions:
 
-- the log reaches `PASS stage=present` and `PASS stage=complete`;
+- the log reaches `PASS stage=present` and `PASS stage=clean-exit`;
+- an image view using the advertised swapchain format reaches
+  `PASS stage=image-view`;
 - the window is red rather than blue, black, or intermittently corrupted;
 - Termux:X11 reports the Present copy as GPU-offloaded;
 - the process exits normally without terminating the X server.

@@ -1,7 +1,9 @@
 #define VK_USE_PLATFORM_XCB_KHR
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <vulkan/vulkan.h>
 #include <xcb/xcb.h>
@@ -23,8 +25,39 @@ static xcb_screen_t *get_screen(xcb_connection_t *connection, int number)
     return iterator.data;
 }
 
-int main(void)
+static uint64_t parse_u64(const char *value, const char *option)
 {
+    char *end = NULL;
+    if (value[0] == '\0')
+        goto invalid;
+    for (const unsigned char *cursor = (const unsigned char *)value;
+         *cursor != '\0'; ++cursor)
+        if (*cursor < '0' || *cursor > '9')
+            goto invalid;
+
+    errno = 0;
+    unsigned long long parsed = strtoull(value, &end, 10);
+    if (end == NULL || *end != '\0' || errno == ERANGE)
+        goto invalid;
+    return (uint64_t)parsed;
+
+invalid:
+    fprintf(stderr, "FAIL stage=arguments option=%s value=%s\n", option, value);
+    exit(2);
+}
+
+int main(int argc, char **argv)
+{
+    uint64_t hold_ms = 6000;
+    for (int index = 1; index < argc; ++index) {
+        if (strcmp(argv[index], "--hold-ms") == 0 && index + 1 < argc) {
+            hold_ms = parse_u64(argv[++index], "--hold-ms");
+        } else {
+            fprintf(stderr, "usage: %s [--hold-ms MILLISECONDS]\n", argv[0]);
+            return 2;
+        }
+    }
+
     int screen_number = 0;
     xcb_connection_t *connection = xcb_connect(NULL, &screen_number);
     if (xcb_connection_has_error(connection)) {
@@ -201,7 +234,31 @@ int main(void)
     VkImage *images = calloc(swapchain_image_count, sizeof(*images));
     CHECK_VK(vkGetSwapchainImagesKHR(device, swapchain,
                                      &swapchain_image_count, images),
-             "swapchain-images");
+                 "swapchain-images");
+
+    VkImageViewCreateInfo view_create = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = images[0],
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = format.format,
+        .components = {
+            .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+        },
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    };
+    VkImageView image_view = VK_NULL_HANDLE;
+    CHECK_VK(vkCreateImageView(device, &view_create, NULL, &image_view),
+             "create-swapchain-image-view");
+    printf("PASS stage=image-view format=%u\n", format.format);
 
     VkCommandPoolCreateInfo pool_create = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -305,12 +362,16 @@ int main(void)
     printf("PASS stage=present color=red image=%u\n", image_index);
     fflush(stdout);
 
-    struct timespec visible = { .tv_sec = 6 };
+    struct timespec visible = {
+        .tv_sec = (time_t)(hold_ms / 1000),
+        .tv_nsec = (long)((hold_ms % 1000) * 1000000),
+    };
     nanosleep(&visible, NULL);
     vkDeviceWaitIdle(device);
     vkDestroySemaphore(device, rendered, NULL);
     vkDestroySemaphore(device, acquired, NULL);
     vkDestroyCommandPool(device, pool, NULL);
+    vkDestroyImageView(device, image_view, NULL);
     free(images);
     vkDestroySwapchainKHR(device, swapchain, NULL);
     vkDestroyDevice(device, NULL);
