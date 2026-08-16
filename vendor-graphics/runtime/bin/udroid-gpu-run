@@ -78,12 +78,13 @@ esac
 
 mesa_dir=$runtime_root/lib/mesa
 bridge_dir=$runtime_root/lib/bridge
+linker_dir=$bridge_dir/libhybris/linker
 layer_dir=$runtime_root/share/vulkan/explicit_layer.d
 icd=$runtime_root/share/vulkan/icd.d/sysvk.json
 
 for required in \
     "$mesa_dir/dri/zink_dri.so" \
-    "$bridge_dir/linker" \
+    "$linker_dir/q.so" \
     "$icd" \
     "$layer_dir/VkLayer_window_system_integration.json"; do
     [[ -e $required ]] || {
@@ -122,7 +123,7 @@ export LD_LIBRARY_PATH=$mesa_dir:$bridge_dir:$layer_dir${LD_LIBRARY_PATH:+:$LD_L
 
 export HYBRIS_FORCE_LEGACY_PROPERTY_HOOKS=1
 export HYBRIS_SKIP_BIONIC_PROPERTY_INIT=1
-export HYBRIS_LINKER_DIR=$bridge_dir/linker
+export HYBRIS_LINKER_DIR=$linker_dir
 export HYBRIS_PTHREAD_RAW_EXIT=1
 export HYBRIS_LD_LIBRARY_PATH=$bridge_dir/bionic:/system/lib64:/system_ext/lib64:/product/lib64:/vendor/lib64:/vendor/lib64/egl:/vendor/lib64/hw:/odm/lib64:/apex/com.android.runtime/lib64/bionic:/apex/com.android.i18n/lib64:/apex/com.android.tethering/lib64
 
