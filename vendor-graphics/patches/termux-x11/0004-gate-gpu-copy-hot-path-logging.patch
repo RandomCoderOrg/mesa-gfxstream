@@ -1,0 +1,16 @@
+--- a/renderer.c
++++ b/renderer.c
+@@ -744,9 +744,10 @@ static uint64_t rendererApplyPendingGpuCopiesLocked(void) {
+                 float v1 = (float) r.y2 / (float) srcDesc->height;
+                 // Only swap channels if src/dst storage formats actually differ.
+                 uint8_t needsSwizzle = LorieBuffer_isRgba(src) != LorieBuffer_isRgba(dst);
+-                log("rendererApplyPendingGpuCopies: rect (%d,%d)-(%d,%d) off=(%d,%d) -> ndc=(%.3f,%.3f)-(%.3f,%.3f) uv=(%.3f,%.3f)-(%.3f,%.3f) srcTex=%u dstTex=%u swizzle=%d\n",
+-                    r.x1, r.y1, r.x2, r.y2, entry.xOff, entry.yOff, x0, y0, x1, y1, u0, v0, u1, v1,
+-                    LorieBuffer_getGLTextureId(src), LorieBuffer_getGLTextureId(dst), needsSwizzle);
++                if (lorieDebugEnabled)
++                    log("rendererApplyPendingGpuCopies: rect (%d,%d)-(%d,%d) off=(%d,%d) -> ndc=(%.3f,%.3f)-(%.3f,%.3f) uv=(%.3f,%.3f)-(%.3f,%.3f) srcTex=%u dstTex=%u swizzle=%d\n",
++                        r.x1, r.y1, r.x2, r.y2, entry.xOff, entry.yOff, x0, y0, x1, y1, u0, v0, u1, v1,
++                        LorieBuffer_getGLTextureId(src), LorieBuffer_getGLTextureId(dst), needsSwizzle);
+                 drawRegion(0, x0, y0, x1, y1, u0, v0, u1, v1, needsSwizzle);
+             }
+         }

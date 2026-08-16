@@ -19,6 +19,8 @@ file.
 | Explicit acquire ordering | Pass | 25/25 Presents stayed blocked for 250–252 ms, then completed 16–39 ms after producer release |
 | Present source release ordering | Pass | Termux:X11 completes its GLES source read before IdleNotify makes the pixmap reusable |
 | Renderer lock deadline | Pass | 25/25; matching ~50 ms wall wait, average waiting CPU reduced from 49,760 us to 190 us (99.6%) |
+| Serialized steady Present | Pass | 5 x 60 frames, five clean exits, 60.10-63.14 FPS with explicit acquire enabled |
+| Normal-mode renderer logging | Pass | 0 per-rectangle hot-path entries, down from 58 writes in the earlier one-second run |
 | Current provider CPU readback | Open regression | Transport succeeds, but the full map/readback probe reached a page boundary outside its returned mapping; WSI does not CPU-map these display targets |
 | Mesa Zink | Blocked | Jammy Mesa rejects missing `logicOp`, `fillModeNonSolid`, and `shaderClipDistance` features |
 | Desktop compositor | Not qualified | Requires a matched Zink build after the feature-policy issue is resolved |

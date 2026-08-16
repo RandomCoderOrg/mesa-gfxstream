@@ -80,6 +80,20 @@
         "realtimeDeadline": 190
       },
       "cpuReductionPercent": 99.6
+    },
+    "steadyPresentSoak": {
+      "cycles": 5,
+      "framesPerCycle": 60,
+      "totalFrames": 300,
+      "cleanExits": 5,
+      "fps": {
+        "minimum": 60.10,
+        "median": 62.55,
+        "maximum": 63.14,
+        "mean": 61.79
+      },
+      "explicitAcquire": true,
+      "normalModePerRectangleLogs": 0
     }
   },
   "qualification": "explicit-acquire-and-lock-clock-pass",

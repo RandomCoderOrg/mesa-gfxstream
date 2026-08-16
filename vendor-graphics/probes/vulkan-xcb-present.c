@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #define VK_USE_PLATFORM_XCB_KHR
 #include <errno.h>
 #include <stdint.h>
@@ -46,14 +47,31 @@ invalid:
     exit(2);
 }
 
+static uint64_t monotonic_ns(void)
+{
+    struct timespec value;
+    clock_gettime(CLOCK_MONOTONIC, &value);
+    return (uint64_t)value.tv_sec * 1000000000ULL + (uint64_t)value.tv_nsec;
+}
+
 int main(int argc, char **argv)
 {
     uint64_t hold_ms = 6000;
+    uint64_t frame_count = 1;
     for (int index = 1; index < argc; ++index) {
         if (strcmp(argv[index], "--hold-ms") == 0 && index + 1 < argc) {
             hold_ms = parse_u64(argv[++index], "--hold-ms");
+        } else if (strcmp(argv[index], "--frames") == 0 && index + 1 < argc) {
+            frame_count = parse_u64(argv[++index], "--frames");
+            if (frame_count == 0 || frame_count > 100000) {
+                fprintf(stderr, "FAIL stage=arguments option=--frames value=%llu\n",
+                        (unsigned long long)frame_count);
+                return 2;
+            }
         } else {
-            fprintf(stderr, "usage: %s [--hold-ms MILLISECONDS]\n", argv[0]);
+            fprintf(stderr,
+                    "usage: %s [--hold-ms MILLISECONDS] [--frames COUNT]\n",
+                    argv[0]);
             return 2;
         }
     }
@@ -288,35 +306,10 @@ int main(int argc, char **argv)
              "create-render-semaphore");
 
     uint32_t image_index = 0;
-    CHECK_VK(vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
-                                   acquired, VK_NULL_HANDLE, &image_index),
-             "acquire-image");
     VkCommandBufferBeginInfo begin = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    CHECK_VK(vkBeginCommandBuffer(command, &begin), "begin-command-buffer");
-    VkImageMemoryBarrier to_transfer = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .srcAccessMask = 0,
-        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = images[image_index],
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-    };
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                         0, NULL, 0, NULL, 1, &to_transfer);
-    VkClearColorValue color = { .float32 = { 1.0f, 0.08f, 0.0f, 1.0f } };
     VkImageSubresourceRange range = {
         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
         .baseMipLevel = 0,
@@ -324,42 +317,72 @@ int main(int argc, char **argv)
         .baseArrayLayer = 0,
         .layerCount = 1,
     };
-    vkCmdClearColorImage(command, images[image_index],
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         &color, 1, &range);
-    VkImageMemoryBarrier to_present = to_transfer;
-    to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    to_present.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
-                         0, NULL, 0, NULL, 1, &to_present);
-    CHECK_VK(vkEndCommandBuffer(command), "end-command-buffer");
-
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    VkSubmitInfo submit = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &acquired,
-        .pWaitDstStageMask = &wait_stage,
-        .commandBufferCount = 1,
-        .pCommandBuffers = &command,
-        .signalSemaphoreCount = 1,
-        .pSignalSemaphores = &rendered,
-    };
-    CHECK_VK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE), "queue-submit");
-    VkPresentInfoKHR present = {
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &rendered,
-        .swapchainCount = 1,
-        .pSwapchains = &swapchain,
-        .pImageIndices = &image_index,
-    };
-    CHECK_VK(vkQueuePresentKHR(queue, &present), "queue-present");
-    CHECK_VK(vkQueueWaitIdle(queue), "queue-idle");
-    printf("PASS stage=present color=red image=%u\n", image_index);
+    uint64_t present_start = monotonic_ns();
+    for (uint64_t frame = 0; frame < frame_count; ++frame) {
+        if (frame > 0)
+            CHECK_VK(vkResetCommandBuffer(command, 0), "reset-command-buffer");
+        CHECK_VK(vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
+                                       acquired, VK_NULL_HANDLE, &image_index),
+                 "acquire-image");
+        CHECK_VK(vkBeginCommandBuffer(command, &begin), "begin-command-buffer");
+        VkImageMemoryBarrier to_transfer = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = images[image_index],
+            .subresourceRange = range,
+        };
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, NULL, 0, NULL, 1, &to_transfer);
+        VkClearColorValue color = frame & 1
+            ? (VkClearColorValue) { .float32 = { 0.04f, 0.12f, 0.32f, 1.0f } }
+            : (VkClearColorValue) { .float32 = { 1.0f, 0.08f, 0.0f, 1.0f } };
+        vkCmdClearColorImage(command, images[image_index],
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &color, 1, &range);
+        VkImageMemoryBarrier to_present = to_transfer;
+        to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        to_present.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
+                             0, NULL, 0, NULL, 1, &to_present);
+        CHECK_VK(vkEndCommandBuffer(command), "end-command-buffer");
+
+        VkSubmitInfo submit = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &acquired,
+            .pWaitDstStageMask = &wait_stage,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &command,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &rendered,
+        };
+        CHECK_VK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE), "queue-submit");
+        VkPresentInfoKHR present = {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &rendered,
+            .swapchainCount = 1,
+            .pSwapchains = &swapchain,
+            .pImageIndices = &image_index,
+        };
+        CHECK_VK(vkQueuePresentKHR(queue, &present), "queue-present");
+        CHECK_VK(vkQueueWaitIdle(queue), "queue-idle");
+    }
+    uint64_t present_ns = monotonic_ns() - present_start;
+    printf("PASS stage=present frames=%llu last_image=%u duration_ms=%.3f fps=%.2f\n",
+           (unsigned long long)frame_count, image_index,
+           (double)present_ns / 1000000.0,
+           (double)frame_count * 1000000000.0 / (double)present_ns);
     fflush(stdout);
 
     struct timespec visible = {

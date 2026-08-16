@@ -35,6 +35,8 @@ flowchart LR
 | Explicit acquire ordering | Pass | 25/25 delayed Vulkan sync-file Presents withheld completion before release and completed 16–39 ms after release |
 | Present source release ordering | Pass | Termux:X11 waits for its GLES copy fence before emitting IdleNotify; xMeM passes no idle fence, so Present's standard pixmap-reuse guarantee applies |
 | Contended renderer lock clock | Fixed | 25/25 on-device probes passed; waiting-thread CPU fell from 49,760 us to 190 us on average while lock latency remained approximately 50 ms |
+| GPU-copy hot-path logging | Fixed | Normal mode emitted 0 per-rectangle logs after the gate, versus 58 writes during the earlier one-second 60-frame run |
+| Serialized steady Present | Pass | Five consecutive 60-frame runs completed cleanly at 60.10-63.14 FPS (61.79 FPS mean) with explicit acquire synchronization enabled |
 
 ## Promotion gates still open
 

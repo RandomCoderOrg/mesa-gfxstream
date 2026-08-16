@@ -13,6 +13,11 @@ The default six-second hold supports visual inspection. Use `--hold-ms 0` for
 repeatable lifecycle soaks that exercise creation, presentation, and teardown
 without paying the visual hold cost on every cycle.
 
+Use `--frames COUNT` to alternate red and blue clears through one swapchain and
+report elapsed presentation time and FPS. The probe waits for the queue after
+each frame intentionally: this measures deterministic acquire, Present, Idle,
+and image-reuse latency rather than maximum application-side queue depth.
+
 Build it in an AArch64 glibc guest with Vulkan and XCB development headers:
 
 ```sh
@@ -20,6 +25,7 @@ cc -O2 -Wall -Wextra vulkan-xcb-present.c -o vulkan-xcb-present \
   -lvulkan -lxcb
 
 ./vulkan-xcb-present --hold-ms 0
+./vulkan-xcb-present --frames 60 --hold-ms 0
 ```
 
 A passing run must satisfy all of these conditions:
