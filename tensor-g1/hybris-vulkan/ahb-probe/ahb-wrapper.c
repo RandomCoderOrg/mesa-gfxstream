@@ -68,7 +68,10 @@ static void initialize_api(void)
     const char *library = getenv("HYBRIS_AHB_LIBRARY");
     trace_enabled = getenv("UDROID_AHB_TRACE") != NULL;
     if (library == NULL || library[0] == '\0') {
-        library = "libandroid.so";
+        /* The AHardwareBuffer implementation lives in libnativewindow. Loading
+         * libandroid only for these symbols pulls the broader Android framework
+         * dependency graph into a glibc process and is unsafe on some vendors. */
+        library = "libnativewindow.so";
     }
     trace("dlopen_begin", library);
     api.handle = hybris_dlopen(library, RTLD_NOW | RTLD_LOCAL);

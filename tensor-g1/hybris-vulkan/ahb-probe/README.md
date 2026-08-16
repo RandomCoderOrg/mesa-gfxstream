@@ -31,6 +31,12 @@ Run through the existing per-process libhybris environment and capture JSONL:
 tensor-vulkan-run ./ahb-probe 10 32 > ahb-lifecycle.jsonl
 ```
 
+The wrapper resolves the NDK AHardwareBuffer entry points from
+`libnativewindow.so`. That is the narrow implementation library and avoids
+loading the much larger `libandroid.so` framework dependency graph into the
+glibc process. `HYBRIS_AHB_LIBRARY` remains available for an explicitly probed
+device override; a runtime must not guess a different provider after a crash.
+
 This probe does not claim X11 GPU Present offload. Passing it is the gate for
 the next probe, which registers the received AHB with Termux:X11 and measures
 the server's offload counter. The existing Ginkage DMA-BUF WSI remains
