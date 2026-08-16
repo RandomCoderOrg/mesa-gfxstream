@@ -1,0 +1,323 @@
+#define VK_USE_PLATFORM_XCB_KHR
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <vulkan/vulkan.h>
+#include <xcb/xcb.h>
+
+#define CHECK_VK(call, stage) do { \
+    VkResult check_result = (call); \
+    if (check_result != VK_SUCCESS) { \
+        fprintf(stderr, "FAIL stage=%s result=%d\n", stage, check_result); \
+        return 1; \
+    } \
+} while (0)
+
+static xcb_screen_t *get_screen(xcb_connection_t *connection, int number)
+{
+    xcb_screen_iterator_t iterator =
+        xcb_setup_roots_iterator(xcb_get_setup(connection));
+    while (iterator.rem && number-- > 0)
+        xcb_screen_next(&iterator);
+    return iterator.data;
+}
+
+int main(void)
+{
+    int screen_number = 0;
+    xcb_connection_t *connection = xcb_connect(NULL, &screen_number);
+    if (xcb_connection_has_error(connection)) {
+        fprintf(stderr, "FAIL stage=xcb-connect\n");
+        return 1;
+    }
+    xcb_screen_t *screen = get_screen(connection, screen_number);
+    if (!screen) {
+        fprintf(stderr, "FAIL stage=xcb-screen\n");
+        return 1;
+    }
+
+    xcb_window_t window = xcb_generate_id(connection);
+    uint32_t values[] = { screen->black_pixel, XCB_EVENT_MASK_EXPOSURE };
+    xcb_create_window(connection, XCB_COPY_FROM_PARENT, window, screen->root,
+                      80, 100, 480, 320, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
+                      XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
+    const char title[] = "uDroid vendor Vulkan WSI probe";
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, window,
+                        XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8,
+                        sizeof(title) - 1, title);
+    xcb_map_window(connection, window);
+    xcb_flush(connection);
+    printf("PASS stage=xcb-window\n");
+
+    const char *instance_extensions[] = {
+        VK_KHR_SURFACE_EXTENSION_NAME,
+        VK_KHR_XCB_SURFACE_EXTENSION_NAME,
+    };
+    VkApplicationInfo application = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "udroid-vulkan-xcb-present-probe",
+        .apiVersion = VK_API_VERSION_1_0,
+    };
+    VkInstanceCreateInfo instance_create = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &application,
+        .enabledExtensionCount = 2,
+        .ppEnabledExtensionNames = instance_extensions,
+    };
+    VkInstance instance = VK_NULL_HANDLE;
+    CHECK_VK(vkCreateInstance(&instance_create, NULL, &instance), "create-instance");
+    printf("PASS stage=vulkan-instance\n");
+
+    uint32_t physical_count = 0;
+    CHECK_VK(vkEnumeratePhysicalDevices(instance, &physical_count, NULL),
+             "count-physical-devices");
+    if (physical_count == 0) {
+        fprintf(stderr, "FAIL stage=no-physical-device\n");
+        return 1;
+    }
+    VkPhysicalDevice *physical_devices =
+        calloc(physical_count, sizeof(*physical_devices));
+    CHECK_VK(vkEnumeratePhysicalDevices(instance, &physical_count, physical_devices),
+             "enumerate-physical-devices");
+    VkPhysicalDevice physical = physical_devices[0];
+    free(physical_devices);
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(physical, &properties);
+    printf("PASS stage=physical-device device=%s api=%u.%u.%u\n",
+           properties.deviceName,
+           VK_VERSION_MAJOR(properties.apiVersion),
+           VK_VERSION_MINOR(properties.apiVersion),
+           VK_VERSION_PATCH(properties.apiVersion));
+
+    VkXcbSurfaceCreateInfoKHR surface_create = {
+        .sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+        .connection = connection,
+        .window = window,
+    };
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    CHECK_VK(vkCreateXcbSurfaceKHR(instance, &surface_create, NULL, &surface),
+             "create-xcb-surface");
+    printf("PASS stage=xcb-surface\n");
+
+    uint32_t queue_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &queue_count, NULL);
+    VkQueueFamilyProperties *queue_properties =
+        calloc(queue_count, sizeof(*queue_properties));
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &queue_count, queue_properties);
+    uint32_t queue_family = UINT32_MAX;
+    for (uint32_t index = 0; index < queue_count; ++index) {
+        VkBool32 present_supported = VK_FALSE;
+        CHECK_VK(vkGetPhysicalDeviceSurfaceSupportKHR(
+                     physical, index, surface, &present_supported),
+                 "query-surface-support");
+        if ((queue_properties[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+            present_supported) {
+            queue_family = index;
+            break;
+        }
+    }
+    free(queue_properties);
+    if (queue_family == UINT32_MAX) {
+        fprintf(stderr, "FAIL stage=no-present-queue\n");
+        return 1;
+    }
+
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo queue_create = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = queue_family,
+        .queueCount = 1,
+        .pQueuePriorities = &priority,
+    };
+    const char *device_extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    VkDeviceCreateInfo device_create = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = 1,
+        .pQueueCreateInfos = &queue_create,
+        .enabledExtensionCount = 1,
+        .ppEnabledExtensionNames = device_extensions,
+    };
+    VkDevice device = VK_NULL_HANDLE;
+    CHECK_VK(vkCreateDevice(physical, &device_create, NULL, &device),
+             "create-device");
+    VkQueue queue = VK_NULL_HANDLE;
+    vkGetDeviceQueue(device, queue_family, 0, &queue);
+    printf("PASS stage=vulkan-device queue_family=%u\n", queue_family);
+
+    VkSurfaceCapabilitiesKHR capabilities;
+    CHECK_VK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+                 physical, surface, &capabilities),
+             "surface-capabilities");
+    uint32_t format_count = 0;
+    CHECK_VK(vkGetPhysicalDeviceSurfaceFormatsKHR(
+                 physical, surface, &format_count, NULL),
+             "count-surface-formats");
+    VkSurfaceFormatKHR *formats = calloc(format_count, sizeof(*formats));
+    CHECK_VK(vkGetPhysicalDeviceSurfaceFormatsKHR(
+                 physical, surface, &format_count, formats),
+             "surface-formats");
+    if (format_count == 0) {
+        fprintf(stderr, "FAIL stage=no-surface-format\n");
+        return 1;
+    }
+    VkSurfaceFormatKHR format = formats[0];
+    free(formats);
+    VkExtent2D extent = capabilities.currentExtent;
+    uint32_t image_count = capabilities.minImageCount;
+    if (image_count < 2)
+        image_count = 2;
+    if (capabilities.maxImageCount && image_count > capabilities.maxImageCount)
+        image_count = capabilities.maxImageCount;
+    VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    if (!(capabilities.supportedCompositeAlpha & alpha))
+        alpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+    VkSwapchainCreateInfoKHR swapchain_create = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = surface,
+        .minImageCount = image_count,
+        .imageFormat = format.format,
+        .imageColorSpace = format.colorSpace,
+        .imageExtent = extent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .preTransform = capabilities.currentTransform,
+        .compositeAlpha = alpha,
+        .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        .clipped = VK_TRUE,
+    };
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    CHECK_VK(vkCreateSwapchainKHR(device, &swapchain_create, NULL, &swapchain),
+             "create-swapchain");
+    printf("PASS stage=swapchain extent=%ux%u format=%u images=%u\n",
+           extent.width, extent.height, format.format, image_count);
+
+    uint32_t swapchain_image_count = 0;
+    CHECK_VK(vkGetSwapchainImagesKHR(device, swapchain,
+                                     &swapchain_image_count, NULL),
+             "count-swapchain-images");
+    VkImage *images = calloc(swapchain_image_count, sizeof(*images));
+    CHECK_VK(vkGetSwapchainImagesKHR(device, swapchain,
+                                     &swapchain_image_count, images),
+             "swapchain-images");
+
+    VkCommandPoolCreateInfo pool_create = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = queue_family,
+    };
+    VkCommandPool pool = VK_NULL_HANDLE;
+    CHECK_VK(vkCreateCommandPool(device, &pool_create, NULL, &pool),
+             "create-command-pool");
+    VkCommandBufferAllocateInfo command_allocate = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    CHECK_VK(vkAllocateCommandBuffers(device, &command_allocate, &command),
+             "allocate-command-buffer");
+    VkSemaphoreCreateInfo semaphore_create = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+    VkSemaphore acquired = VK_NULL_HANDLE;
+    VkSemaphore rendered = VK_NULL_HANDLE;
+    CHECK_VK(vkCreateSemaphore(device, &semaphore_create, NULL, &acquired),
+             "create-acquire-semaphore");
+    CHECK_VK(vkCreateSemaphore(device, &semaphore_create, NULL, &rendered),
+             "create-render-semaphore");
+
+    uint32_t image_index = 0;
+    CHECK_VK(vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
+                                   acquired, VK_NULL_HANDLE, &image_index),
+             "acquire-image");
+    VkCommandBufferBeginInfo begin = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    CHECK_VK(vkBeginCommandBuffer(command, &begin), "begin-command-buffer");
+    VkImageMemoryBarrier to_transfer = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = images[image_index],
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    };
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                         0, NULL, 0, NULL, 1, &to_transfer);
+    VkClearColorValue color = { .float32 = { 1.0f, 0.08f, 0.0f, 1.0f } };
+    VkImageSubresourceRange range = {
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .baseMipLevel = 0,
+        .levelCount = 1,
+        .baseArrayLayer = 0,
+        .layerCount = 1,
+    };
+    vkCmdClearColorImage(command, images[image_index],
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         &color, 1, &range);
+    VkImageMemoryBarrier to_present = to_transfer;
+    to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_present.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
+                         0, NULL, 0, NULL, 1, &to_present);
+    CHECK_VK(vkEndCommandBuffer(command), "end-command-buffer");
+
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &acquired,
+        .pWaitDstStageMask = &wait_stage,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &rendered,
+    };
+    CHECK_VK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE), "queue-submit");
+    VkPresentInfoKHR present = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &rendered,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &image_index,
+    };
+    CHECK_VK(vkQueuePresentKHR(queue, &present), "queue-present");
+    CHECK_VK(vkQueueWaitIdle(queue), "queue-idle");
+    printf("PASS stage=present color=red image=%u\n", image_index);
+    fflush(stdout);
+
+    struct timespec visible = { .tv_sec = 6 };
+    nanosleep(&visible, NULL);
+    vkDeviceWaitIdle(device);
+    vkDestroySemaphore(device, rendered, NULL);
+    vkDestroySemaphore(device, acquired, NULL);
+    vkDestroyCommandPool(device, pool, NULL);
+    free(images);
+    vkDestroySwapchainKHR(device, swapchain, NULL);
+    vkDestroyDevice(device, NULL);
+    vkDestroySurfaceKHR(instance, surface, NULL);
+    vkDestroyInstance(instance, NULL);
+    xcb_destroy_window(connection, window);
+    xcb_disconnect(connection);
+    printf("PASS stage=clean-exit\n");
+    return 0;
+}

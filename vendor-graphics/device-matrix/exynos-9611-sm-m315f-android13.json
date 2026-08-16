@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "deviceId": "fc64011805a98886",
+  "android": {
+    "manufacturer": "samsung",
+    "model": "SM-M315F",
+    "device": "m31",
+    "board": "exynos9611",
+    "platform": "universal9611",
+    "hardware": "exynos9611",
+    "socManufacturer": "Samsung",
+    "socModel": "Exynos 9611",
+    "release": "13",
+    "sdk": 33,
+    "buildFingerprint": "samsung/m31nsxx/m31:12/SP1A.210812.016/M315FXXU3CWA2:user/release-keys",
+    "vendorFingerprint": "samsung/m31nsxx/m31:12/SP1A.210812.016/M315FXXU3CWA2:user/release-keys",
+    "abiList": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "armeabi"
+    ],
+    "vndkVersion": "33",
+    "trebleEnabled": true,
+    "vulkanProperty": "",
+    "kernel": "4.14.246-GrassKSU@bc93e02ad0",
+    "selinux": "Enforcing"
+  },
+  "discovery": {
+    "deviceNodes": [
+      {
+        "path": "/dev/mali0",
+        "listing": "crw-rw-rw- 1 system system u:object_r:gpu_device:s0  10,  92 2026-08-13 17:38 /dev/mali0"
+      },
+      {
+        "path": "/dev/ion",
+        "listing": "crw-rw-rw- 1 system system u:object_r:ion_device:s0  10,  95 2026-08-13 17:38 /dev/ion"
+      }
+    ],
+    "vulkanHalCandidates": [
+      {
+        "path": "/vendor/lib64/hw/vulkan.universal9611.so",
+        "listing": "lrw-r--r-- 1 root root 33 2009-01-01 05:30 /vendor/lib64/hw/vulkan.universal9611.so -> /vendor/lib64/egl/libGLES_mali.so"
+      }
+    ]
+  },
+  "appDomain": {
+    "package": "org.randomcoder.udroid",
+    "probeAvailable": true,
+    "identity": "uid=10275(u0_a275) gid=10275(u0_a275) groups=10275(u0_a275),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),1078(ext_data_rw),1079(ext_obb_rw),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid),3012(readtracefs),50275(all_a275) context=u:r:runas_app:s0:c19,c257,c512,c768",
+    "deviceAccess": [
+      {
+        "path": "/dev/mali0",
+        "exists": true,
+        "readable": true,
+        "writable": true
+      },
+      {
+        "path": "/dev/kgsl-3d0",
+        "exists": false,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dri/renderD128",
+        "exists": false,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dri/card0",
+        "exists": false,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/system",
+        "exists": false,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/system-uncached",
+        "exists": false,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/ion",
+        "exists": true,
+        "readable": true,
+        "writable": true
+      }
+    ]
+  }
+}

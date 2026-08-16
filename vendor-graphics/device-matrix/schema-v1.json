@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/RandomCoderOrg/tensor-g1-proot-gpu/vendor-graphics/device-matrix/schema-v1.json",
+  "title": "uDroid Android graphics discovery baseline",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "deviceId", "android", "discovery", "appDomain"],
+  "properties": {
+    "schema": { "const": 1 },
+    "deviceId": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "android": {
+      "type": "object",
+      "required": [
+        "manufacturer", "model", "device", "board", "platform", "hardware",
+        "socManufacturer", "socModel", "release", "sdk", "buildFingerprint",
+        "vendorFingerprint", "abiList", "vndkVersion", "trebleEnabled",
+        "vulkanProperty", "kernel", "selinux"
+      ],
+      "properties": {
+        "manufacturer": { "type": "string" },
+        "model": { "type": "string" },
+        "device": { "type": "string" },
+        "board": { "type": "string" },
+        "platform": { "type": "string" },
+        "hardware": { "type": "string" },
+        "socManufacturer": { "type": "string" },
+        "socModel": { "type": "string" },
+        "release": { "type": "string" },
+        "sdk": { "type": "integer", "minimum": 1 },
+        "buildFingerprint": { "type": "string" },
+        "vendorFingerprint": { "type": "string" },
+        "abiList": { "type": "array", "items": { "type": "string" } },
+        "vndkVersion": { "type": "string" },
+        "trebleEnabled": { "type": "boolean" },
+        "vulkanProperty": { "type": "string" },
+        "kernel": { "type": "string" },
+        "selinux": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "discovery": {
+      "type": "object",
+      "required": ["deviceNodes", "vulkanHalCandidates"],
+      "properties": {
+        "deviceNodes": { "$ref": "#/$defs/pathListings" },
+        "vulkanHalCandidates": { "$ref": "#/$defs/pathListings" }
+      },
+      "additionalProperties": false
+    },
+    "appDomain": {
+      "type": "object",
+      "required": ["package", "probeAvailable", "identity", "deviceAccess"],
+      "properties": {
+        "package": { "type": "string" },
+        "probeAvailable": { "type": "boolean" },
+        "identity": { "type": "string" },
+        "deviceAccess": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "exists", "readable", "writable"],
+            "properties": {
+              "path": { "type": "string", "pattern": "^/dev/" },
+              "exists": { "type": "boolean" },
+              "readable": { "type": "boolean" },
+              "writable": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "pathListings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "listing"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^/" },
+          "listing": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

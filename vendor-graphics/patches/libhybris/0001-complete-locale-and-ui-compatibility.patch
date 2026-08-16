@@ -1,0 +1,54 @@
+From: uDroid graphics runtime
+Subject: [PATCH] libhybris: complete locale and Android UI compatibility
+
+Vendor Mali libraries on the tested Android 13 device require
+__ctype_get_mb_cur_max through the Bionic-to-glibc hook table. Android 10+
+UI headers also require the platform Rect definition.
+---
+ hybris/common/hooks.c                              | 8 ++++++++
+ hybris/include/hybris/ui/ui_compatibility_layer.h | 4 ++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index 67bbf31..7f52f4c 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -2596,6 +2596,13 @@ static locale_t _hybris_hook_uselocale(locale_t newloc)
+     return uselocale(newloc);
+ }
+ 
++static size_t _hybris_hook___ctype_get_mb_cur_max(void)
++{
++    TRACE_HOOK("");
++
++    return __ctype_get_mb_cur_max();
++}
++
+ static struct lconv* _hybris_hook_localeconv(void)
+ {
+     TRACE_HOOK("");
+@@ -3312,6 +3319,7 @@ static struct _hook hooks_mm[] = {
+     HOOK_DIRECT(freelocale),
+     HOOK_DIRECT(duplocale),
+     HOOK_DIRECT(uselocale),
++    HOOK_TO(__ctype_get_mb_cur_max, _hybris_hook___ctype_get_mb_cur_max),
+     HOOK_DIRECT(localeconv),
+     HOOK_DIRECT(setlocale),
+     /* sys/mman.h */
+diff --git a/hybris/include/hybris/ui/ui_compatibility_layer.h b/hybris/include/hybris/ui/ui_compatibility_layer.h
+index 423a20f..74c15ef 100644
+--- a/hybris/include/hybris/ui/ui_compatibility_layer.h
++++ b/hybris/include/hybris/ui/ui_compatibility_layer.h
+@@ -21,6 +21,10 @@
+ #include <stdint.h>
+ #include <unistd.h>
+ 
++#if ANDROID_VERSION_MAJOR>=10
++#include <android/rect.h>
++#endif
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+-- 
+2.50.1

@@ -1,0 +1,26 @@
+# Rootless vendor graphics
+
+This directory contains device-neutral probes and qualification records for the
+rootless Android vendor Vulkan bridge. Tensor-specific experiments remain under
+`tensor-g1/`; only work that is intended to apply across Android GPU vendors
+belongs here.
+
+The first supported target is an AArch64 glibc guest on an ARM64 Android device
+with Vulkan and AHardwareBuffer support. A device is never approved from its
+model name alone: it must pass the same capability and presentation probes as
+every other device.
+
+## Baseline collection
+
+Connect one device with ADB and run:
+
+```sh
+vendor-graphics/tools/collect-device-baseline.sh \
+  --serial DEVICE_SERIAL \
+  --output vendor-graphics/device-matrix/DEVICE.json
+```
+
+The report records Android identity, kernel/runtime details, graphics device
+nodes, Vulkan HAL candidates, and what the uDroid app domain can actually
+access. It intentionally does not infer that graphics work merely because a
+Mali, Adreno, or PowerVR node exists.

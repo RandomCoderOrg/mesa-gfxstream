@@ -1,0 +1,141 @@
+From: uDroid graphics runtime
+Subject: [PATCH] X11 WSI: support glibc builds and explicit RGBA semantics
+
+Make Android headers an explicit build input rather than linking libandroid,
+fix portable C++ initialization/includes, and use an RGBA AHardwareBuffer on
+devices which reject BGRA allocation. Private DRI3 modifier 1257 tells the
+paired Termux:X11 server that the buffer content is already RGBA.
+---
+ CMakeLists.txt                 |  8 +++++++-
+ util/custom_allocator.hpp      |  1 +
+ wsi/x11/surface_properties.cpp |  2 +-
+ wsi/x11/swapchain.cpp          | 15 ++++++++++++++-
+ wsi/x11/swapchain.hpp          | 10 +++++++++-
+ 5 files changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 96af204..3149dad 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -240,6 +240,11 @@ else()
+ endif()
+ 
+ # X11 WSI
++set(ANDROID_HEADERS_INCLUDE_DIR "" CACHE PATH
++   "Parent include directory containing android/hardware_buffer.h")
++if(BUILD_WSI_X11 AND ANDROID_HEADERS_INCLUDE_DIR STREQUAL "")
++   message(FATAL_ERROR "ANDROID_HEADERS_INCLUDE_DIR is required for X11 AHardwareBuffer WSI")
++endif()
+ if(BUILD_WSI_X11)
+    set(CMAKE_BUILD_TYPE "Debug")
+ 
+@@ -250,11 +255,12 @@ if(BUILD_WSI_X11)
+ 
+    target_include_directories(wsi_x11 PRIVATE
+       ${PROJECT_SOURCE_DIR}
++      ${ANDROID_HEADERS_INCLUDE_DIR}
+       ${VULKAN_CXX_INCLUDE}
+       ${CMAKE_CURRENT_BINARY_DIR})
+ 
+    target_compile_options(wsi_x11 INTERFACE "-DBUILD_WSI_X11=1")
+-   list(APPEND LINK_WSI_LIBS wsi_x11 xcb xcb-present xcb-xfixes xcb-dri3 X11-xcb android)
++   list(APPEND LINK_WSI_LIBS wsi_x11 xcb xcb-present xcb-xfixes xcb-dri3 X11-xcb)
+ else()
+    list(APPEND JSON_COMMANDS COMMAND sed -i '/VK_KHR_xcb_surface/d' ${CMAKE_CURRENT_BINARY_DIR}/VkLayer_window_system_integration.json)
+    list(APPEND JSON_COMMANDS COMMAND sed -i '/VK_KHR_xlib_surface/d' ${CMAKE_CURRENT_BINARY_DIR}/VkLayer_window_system_integration.json)
+diff --git a/util/custom_allocator.hpp b/util/custom_allocator.hpp
+index a34164a..64a8247 100644
+--- a/util/custom_allocator.hpp
++++ b/util/custom_allocator.hpp
+@@ -28,6 +28,7 @@
+ #include <string>
+ #include <cassert>
+ #include <memory>
++#include <stdexcept>
+ 
+ #include <vulkan/vulkan.h>
+ 
+diff --git a/wsi/x11/surface_properties.cpp b/wsi/x11/surface_properties.cpp
+index b27ea1d..00c3d6c 100644
+--- a/wsi/x11/surface_properties.cpp
++++ b/wsi/x11/surface_properties.cpp
+@@ -284,8 +284,8 @@ CreateXlibSurfaceKHR(VkInstance instance, const VkXlibSurfaceCreateInfoKHR *pCre
+ {
+    const VkXcbSurfaceCreateInfoKHR CreateInfo = {
+       .sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+-      .flags = 0,
+       .pNext = NULL,
++      .flags = 0,
+       .connection = XGetXCBConnection(pCreateInfo->dpy),
+       .window = static_cast<xcb_window_t>(pCreateInfo->window),
+    };
+diff --git a/wsi/x11/swapchain.cpp b/wsi/x11/swapchain.cpp
+index 89a6c2f..6da46d0 100644
+--- a/wsi/x11/swapchain.cpp
++++ b/wsi/x11/swapchain.cpp
+@@ -43,6 +43,15 @@
+ #include <util/timed_semaphore.hpp>
+ #include <vulkan/vulkan_core.h>
+ #include <vulkan/vulkan_android.h>
++#ifndef _Nullable
++#define _Nullable
++#endif
++#ifndef _Nonnull
++#define _Nonnull
++#endif
++#ifndef __INTRODUCED_IN
++#define __INTRODUCED_IN(api_level)
++#endif
+ #include <android/hardware_buffer.h>
+ 
+ #include <xcb/present.h>
+@@ -150,7 +159,7 @@ xcb_pixmap_t swapchain::create_pixmap(swapchain_image &image)
+    auto pixmap = xcb_generate_id(m_connection);
+    auto cookie = xcb_dri3_pixmap_from_buffers_checked(
+       m_connection, pixmap, m_window, 1, m_image_create_info.extent.width, m_image_create_info.extent.height,
+-      data->layout.rowPitch, data->layout.offset, 0, 0, 0, 0, 0, 0, 24, 32, 1255, &fds[1]);
++      data->layout.rowPitch, data->layout.offset, 0, 0, 0, 0, 0, 0, 24, 32, 1257, &fds[1]);
+    xcb_flush(m_connection);
+ 
+    uint8_t buf = 0;
+@@ -179,6 +188,10 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
+ 
+    m_image_create_info = image_create;
+    m_image_create_info.tiling = VK_IMAGE_TILING_LINEAR;
++   /* Samsung's vendor Vulkan cannot allocate BGRA AHardwareBuffer images.
++    * Keep the X11 surface contract BGRA, but back it with the Android-native
++    * RGBA format; the Termux:X11 import boundary performs the semantic
++    * channel conversion. */
+    m_image_create_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+ 
+    VkExternalMemoryImageCreateInfo external_memory_image_create_info = {};
+diff --git a/wsi/x11/swapchain.hpp b/wsi/x11/swapchain.hpp
+index 3bed48d..9745471 100644
+--- a/wsi/x11/swapchain.hpp
++++ b/wsi/x11/swapchain.hpp
+@@ -31,6 +31,15 @@
+ #pragma once
+ 
+ #include "surface.hpp"
++#ifndef _Nullable
++#define _Nullable
++#endif
++#ifndef _Nonnull
++#define _Nonnull
++#endif
++#ifndef __INTRODUCED_IN
++#define __INTRODUCED_IN(api_level)
++#endif
+ #include <android/hardware_buffer.h>
+ #include <condition_variable>
+ #include <cstdint>
+@@ -38,7 +47,6 @@
+ #include <vulkan/vulkan.h>
+ #include <wsi/swapchain_base.hpp>
+ #include <xcb/xcb.h>
+-#include <xcb/shm.h>
+ #include <xcb/present.h>
+ #include <xcb/xproto.h>
+ 
+-- 
+2.50.1

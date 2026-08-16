@@ -1,0 +1,109 @@
+From: uDroid graphics runtime
+Subject: [PATCH] sysvk: discover and validate an explicit Vulkan HAL fallback
+
+Use Android's normal HAL lookup first. If it fails in a rootless guest, permit
+an explicitly discovered HAL from the standard vendor, odm, or system hw
+directories. Validate the module contract before opening it and initialize the
+shared device exactly once.
+---
+ sysvk.c | 81 +++++++++++++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 71 insertions(+), 10 deletions(-)
+
+diff --git a/sysvk.c b/sysvk.c
+index 78bfb16..d9d37b0 100644
+--- a/sysvk.c
++++ b/sysvk.c
+@@ -1,20 +1,81 @@
++#include <dlfcn.h>
+ #include <hardware/hardware.h>
+ #include <hardware/hwvulkan.h>
++#include <hybris/common/dlfcn.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
+ 
+-VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+-vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName) {
+-  hw_module_t *module;
+-  int ret =
+-      hw_get_module(HWVULKAN_HARDWARE_MODULE_ID, (const hw_module_t **)&module);
+-  if (ret) {
++static pthread_once_t device_once = PTHREAD_ONCE_INIT;
++static hwvulkan_device_t *vulkan_device;
++
++static int has_prefix(const char *value, const char *prefix) {
++  return strncmp(value, prefix, strlen(prefix)) == 0;
++}
++
++static int has_suffix(const char *value, const char *suffix) {
++  const size_t value_length = strlen(value);
++  const size_t suffix_length = strlen(suffix);
++  return value_length >= suffix_length &&
++         strcmp(value + value_length - suffix_length, suffix) == 0;
++}
++
++static int is_allowed_hal_path(const char *path) {
++  if (!path || strstr(path, "/../") || strstr(path, "//")) return 0;
++  if (!(has_prefix(path, "/vendor/lib64/hw/vulkan.") ||
++        has_prefix(path, "/odm/lib64/hw/vulkan.") ||
++        has_prefix(path, "/system/lib64/hw/vulkan."))) {
++    return 0;
++  }
++  return has_suffix(path, ".so") && access(path, R_OK) == 0;
++}
++
++static const hw_module_t *load_explicit_hal(void) {
++  const char *path = getenv("UDROID_VULKAN_HAL");
++  if (!is_allowed_hal_path(path)) {
++    fprintf(stderr, "sysvk: no valid explicit Vulkan HAL path\n");
++    return NULL;
++  }
++
++  void *handle = hybris_dlopen(path, RTLD_NOW | RTLD_LOCAL);
++  if (!handle) {
++    fprintf(stderr, "sysvk: could not load explicit Vulkan HAL: %s\n",
++            hybris_dlerror());
+     return NULL;
+   }
+-  hwvulkan_device_t *sysvk = NULL;
+-  module->methods->open(module, HWVULKAN_DEVICE_0, (hw_device_t **)&sysvk);
+-  if (!sysvk) {
++
++  hw_module_t *module = hybris_dlsym(handle, HAL_MODULE_INFO_SYM_AS_STR);
++  if (!module || module->tag != HARDWARE_MODULE_TAG || !module->id ||
++      strcmp(module->id, HWVULKAN_HARDWARE_MODULE_ID) != 0 ||
++      !module->methods || !module->methods->open) {
++    fprintf(stderr, "sysvk: explicit Vulkan HAL has an invalid module contract\n");
+     return NULL;
+   }
+-  return sysvk->GetInstanceProcAddr(instance, pName);
++  module->dso = handle;
++  return module;
++}
++
++static void open_vulkan_device(void) {
++  const hw_module_t *module = NULL;
++  int result = hw_get_module(HWVULKAN_HARDWARE_MODULE_ID, &module);
++  if (result != 0) module = load_explicit_hal();
++  if (!module) return;
++
++  result = module->methods->open(module, HWVULKAN_DEVICE_0,
++                                 (hw_device_t **)&vulkan_device);
++  if (result != 0 || !vulkan_device || !vulkan_device->GetInstanceProcAddr) {
++    fprintf(stderr, "sysvk: Vulkan HAL open failed: %d\n", result);
++    vulkan_device = NULL;
++  }
++}
++
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName) {
++  pthread_once(&device_once, open_vulkan_device);
++  if (!vulkan_device) return NULL;
++  return vulkan_device->GetInstanceProcAddr(instance, pName);
+ }
+ 
+ PFN_vkVoidFunction vk_icdGetPhysicalDeviceProcAddr(VkInstance _instance,
+-- 
+2.50.1
