@@ -119,6 +119,17 @@
       "postFixPresentFrames": 60,
       "postFixPresentFps": 62.28,
       "postFixPresentCleanExit": true
+    },
+    "resizeAndRetirement": {
+      "processes": 20,
+      "passes": 20,
+      "initialExtent": "480x320",
+      "replacementExtent": "576x384",
+      "framesPerProcess": 8,
+      "replacementAfterFrame": 3,
+      "cleanExits": 20,
+      "sampledServerGpuOffloadedCopies": 69,
+      "sampledServerPresentCopyAttempts": 69
     }
   },
   "qualification": "negotiated-explicit-acquire-pass",

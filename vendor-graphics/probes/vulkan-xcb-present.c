@@ -59,6 +59,7 @@ int main(int argc, char **argv)
     uint64_t hold_ms = 6000;
     uint64_t frame_count = 1;
     uint64_t create_destroy_cycles = 0;
+    uint64_t resize_after_frames = 0;
     for (int index = 1; index < argc; ++index) {
         if (strcmp(argv[index], "--hold-ms") == 0 && index + 1 < argc) {
             hold_ms = parse_u64(argv[++index], "--hold-ms");
@@ -79,13 +80,31 @@ int main(int argc, char **argv)
                         (unsigned long long)create_destroy_cycles);
                 return 2;
             }
+        } else if (strcmp(argv[index], "--resize-after-frames") == 0 &&
+                   index + 1 < argc) {
+            resize_after_frames =
+                parse_u64(argv[++index], "--resize-after-frames");
+            if (resize_after_frames == 0 || resize_after_frames > 100000) {
+                fprintf(stderr,
+                        "FAIL stage=arguments option=--resize-after-frames value=%llu\n",
+                        (unsigned long long)resize_after_frames);
+                return 2;
+            }
         } else {
             fprintf(stderr,
                     "usage: %s [--hold-ms MILLISECONDS] [--frames COUNT] "
-                    "[--create-destroy-cycles COUNT]\n",
+                    "[--create-destroy-cycles COUNT] "
+                    "[--resize-after-frames COUNT]\n",
                     argv[0]);
             return 2;
         }
+    }
+    if (resize_after_frames >= frame_count) {
+        fprintf(stderr,
+                "FAIL stage=arguments option=--resize-after-frames value=%llu frames=%llu\n",
+                (unsigned long long)resize_after_frames,
+                (unsigned long long)frame_count);
+        return 2;
     }
 
     int screen_number = 0;
@@ -410,6 +429,101 @@ int main(int argc, char **argv)
         };
         CHECK_VK(vkQueuePresentKHR(queue, &present), "queue-present");
         CHECK_VK(vkQueueWaitIdle(queue), "queue-idle");
+
+        if (frame + 1 == resize_after_frames) {
+            const uint32_t resized_width = extent.width + 96;
+            const uint32_t resized_height = extent.height + 64;
+            const uint32_t resized_values[] = {
+                resized_width,
+                resized_height,
+            };
+            xcb_void_cookie_t resize_cookie = xcb_configure_window_checked(
+                connection, window,
+                XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+                resized_values);
+            xcb_generic_error_t *resize_error =
+                xcb_request_check(connection, resize_cookie);
+            if (resize_error != NULL) {
+                fprintf(stderr,
+                        "FAIL stage=resize-request xcb_error=%u\n",
+                        resize_error->error_code);
+                free(resize_error);
+                return 1;
+            }
+
+            xcb_get_geometry_cookie_t geometry_cookie =
+                xcb_get_geometry(connection, window);
+            xcb_get_geometry_reply_t *geometry =
+                xcb_get_geometry_reply(connection, geometry_cookie, NULL);
+            if (geometry == NULL || geometry->width != resized_width ||
+                geometry->height != resized_height) {
+                fprintf(stderr,
+                        "FAIL stage=resize-geometry expected=%ux%u actual=%ux%u\n",
+                        resized_width, resized_height,
+                        geometry != NULL ? geometry->width : 0,
+                        geometry != NULL ? geometry->height : 0);
+                free(geometry);
+                return 1;
+            }
+            free(geometry);
+
+            VkSurfaceCapabilitiesKHR resized_capabilities;
+            CHECK_VK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+                         physical, surface, &resized_capabilities),
+                     "resize-surface-capabilities");
+            if (resized_capabilities.currentExtent.width != resized_width ||
+                resized_capabilities.currentExtent.height != resized_height) {
+                fprintf(stderr,
+                        "FAIL stage=resize-surface-extent expected=%ux%u actual=%ux%u\n",
+                        resized_width, resized_height,
+                        resized_capabilities.currentExtent.width,
+                        resized_capabilities.currentExtent.height);
+                return 1;
+            }
+
+            VkSwapchainKHR old_swapchain = swapchain;
+            VkSwapchainKHR replacement_swapchain = VK_NULL_HANDLE;
+            swapchain_create.imageExtent = resized_capabilities.currentExtent;
+            swapchain_create.preTransform = resized_capabilities.currentTransform;
+            swapchain_create.oldSwapchain = old_swapchain;
+            CHECK_VK(vkCreateSwapchainKHR(device, &swapchain_create, NULL,
+                                          &replacement_swapchain),
+                     "resize-create-replacement-swapchain");
+
+            uint32_t replacement_image_count = 0;
+            CHECK_VK(vkGetSwapchainImagesKHR(device, replacement_swapchain,
+                                             &replacement_image_count, NULL),
+                     "resize-count-swapchain-images");
+            VkImage *replacement_images =
+                calloc(replacement_image_count, sizeof(*replacement_images));
+            if (replacement_images == NULL) {
+                fprintf(stderr, "FAIL stage=resize-allocate-image-list\n");
+                return 1;
+            }
+            CHECK_VK(vkGetSwapchainImagesKHR(device, replacement_swapchain,
+                                             &replacement_image_count,
+                                             replacement_images),
+                     "resize-swapchain-images");
+
+            view_create.image = replacement_images[0];
+            VkImageView replacement_image_view = VK_NULL_HANDLE;
+            CHECK_VK(vkCreateImageView(device, &view_create, NULL,
+                                       &replacement_image_view),
+                     "resize-create-swapchain-image-view");
+
+            vkDestroyImageView(device, image_view, NULL);
+            free(images);
+            vkDestroySwapchainKHR(device, old_swapchain, NULL);
+            swapchain = replacement_swapchain;
+            images = replacement_images;
+            swapchain_image_count = replacement_image_count;
+            image_view = replacement_image_view;
+            extent = resized_capabilities.currentExtent;
+            swapchain_create.oldSwapchain = VK_NULL_HANDLE;
+            printf("PASS stage=resize-recreate frame=%llu extent=%ux%u images=%u\n",
+                   (unsigned long long)(frame + 1), extent.width, extent.height,
+                   swapchain_image_count);
+        }
     }
     uint64_t present_ns = monotonic_ns() - present_start;
     printf("PASS stage=present frames=%llu last_image=%u duration_ms=%.3f fps=%.2f\n",

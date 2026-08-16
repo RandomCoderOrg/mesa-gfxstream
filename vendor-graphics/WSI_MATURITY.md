@@ -41,6 +41,7 @@ flowchart LR
 | Automatic acquire selection | Pass | With no sync override, xMeM selected a sync-file fence and completed 60 frames at 60.18 FPS with a clean exit; `UDROID_X11_EXPLICIT_SYNC=0` selected the CPU-wait fallback and also exited cleanly |
 | Present thread ownership | Fixed | Special-event and run state are initialized, thread construction owns the run transition, teardown joins by `joinable()`, and partial setup unwinds registrations |
 | Immediate swapchain teardown | Pass | 100/100 swapchains were created and destroyed before first acquire/Present with a clean process exit; a post-fix 60-frame regression passed at 62.28 FPS |
+| Resize and swapchain retirement | Pass | 20/20 independent processes resized 480x320 to 576x384, created a replacement with `oldSwapchain`, rendered afterward, and exited cleanly; Termux:X11 reported 69/69 sampled Present copies GPU-offloaded |
 
 ## Promotion gates still open
 
@@ -52,8 +53,9 @@ flowchart LR
    signals.
 2. Advertise only presentation modes whose semantics are implemented. MAILBOX
    needs real queued-frame replacement; until then FIFO is the release target.
-3. Correctly handle resize, surface loss, retired swapchains, Present serial
-   wrap, and X connection teardown under repeated stress.
+3. Correctly handle surface loss, Present serial wrap, and X connection
+   teardown under repeated stress. Resize and retired-swapchain replacement now
+   pass their first deterministic stress gate.
 4. Move the protocol probe and WSI failure reason into automatic profile
    selection so a mismatched or older server selects another graphics route
    before a desktop is launched.

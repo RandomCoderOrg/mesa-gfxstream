@@ -46,6 +46,7 @@ cc -O2 -Wall -Wextra vulkan-xcb-present.c -o vulkan-xcb-present \
 ./vulkan-xcb-present --hold-ms 0
 ./vulkan-xcb-present --frames 60 --hold-ms 0
 ./vulkan-xcb-present --create-destroy-cycles 100 --hold-ms 0
+./vulkan-xcb-present --frames 8 --resize-after-frames 3 --hold-ms 0
 ```
 
 A passing run must satisfy all of these conditions:
@@ -64,6 +65,11 @@ does not prove correct channel semantics or zero-copy/offloaded presentation.
 immediately destroys each swapchain before any acquire or Present, exercising
 the event-thread startup/destruction boundary without allocating AHB images.
 Every requested cycle and `PASS stage=clean-exit` are mandatory.
+
+`--resize-after-frames` sends a checked X resize, verifies both the X geometry
+and Vulkan surface extent, creates a replacement swapchain with the original
+in `oldSwapchain`, retires the original, and continues rendering. A pass must
+include `PASS stage=resize-recreate`, later presented frames, and a clean exit.
 
 ## AHardwareBuffer transport
 
