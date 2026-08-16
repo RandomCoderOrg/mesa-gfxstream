@@ -39,6 +39,8 @@ flowchart LR
 | Serialized steady Present | Pass | Five consecutive 60-frame runs completed cleanly at 60.10-63.14 FPS (61.79 FPS mean) with explicit acquire synchronization enabled |
 | Paired protocol discovery | Pass | Root property probe reported version 1, all four capability bits, modifiers 1255/1257, and `compatible=true` |
 | Automatic acquire selection | Pass | With no sync override, xMeM selected a sync-file fence and completed 60 frames at 60.18 FPS with a clean exit; `UDROID_X11_EXPLICIT_SYNC=0` selected the CPU-wait fallback and also exited cleanly |
+| Present thread ownership | Fixed | Special-event and run state are initialized, thread construction owns the run transition, teardown joins by `joinable()`, and partial setup unwinds registrations |
+| Immediate swapchain teardown | Pass | 100/100 swapchains were created and destroyed before first acquire/Present with a clean process exit; a post-fix 60-frame regression passed at 62.28 FPS |
 
 ## Promotion gates still open
 

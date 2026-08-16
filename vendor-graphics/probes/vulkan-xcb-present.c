@@ -58,6 +58,7 @@ int main(int argc, char **argv)
 {
     uint64_t hold_ms = 6000;
     uint64_t frame_count = 1;
+    uint64_t create_destroy_cycles = 0;
     for (int index = 1; index < argc; ++index) {
         if (strcmp(argv[index], "--hold-ms") == 0 && index + 1 < argc) {
             hold_ms = parse_u64(argv[++index], "--hold-ms");
@@ -68,9 +69,20 @@ int main(int argc, char **argv)
                         (unsigned long long)frame_count);
                 return 2;
             }
+        } else if (strcmp(argv[index], "--create-destroy-cycles") == 0 &&
+                   index + 1 < argc) {
+            create_destroy_cycles =
+                parse_u64(argv[++index], "--create-destroy-cycles");
+            if (create_destroy_cycles == 0 || create_destroy_cycles > 100000) {
+                fprintf(stderr,
+                        "FAIL stage=arguments option=--create-destroy-cycles value=%llu\n",
+                        (unsigned long long)create_destroy_cycles);
+                return 2;
+            }
         } else {
             fprintf(stderr,
-                    "usage: %s [--hold-ms MILLISECONDS] [--frames COUNT]\n",
+                    "usage: %s [--hold-ms MILLISECONDS] [--frames COUNT] "
+                    "[--create-destroy-cycles COUNT]\n",
                     argv[0]);
             return 2;
         }
@@ -244,6 +256,27 @@ int main(int argc, char **argv)
              "create-swapchain");
     printf("PASS stage=swapchain extent=%ux%u format=%u images=%u\n",
            extent.width, extent.height, format.format, image_count);
+
+    if (create_destroy_cycles != 0) {
+        vkDestroySwapchainKHR(device, swapchain, NULL);
+        swapchain = VK_NULL_HANDLE;
+        for (uint64_t cycle = 1; cycle < create_destroy_cycles; ++cycle) {
+            CHECK_VK(vkCreateSwapchainKHR(device, &swapchain_create, NULL,
+                                          &swapchain),
+                     "create-destroy-swapchain");
+            vkDestroySwapchainKHR(device, swapchain, NULL);
+            swapchain = VK_NULL_HANDLE;
+        }
+        vkDestroyDevice(device, NULL);
+        vkDestroySurfaceKHR(instance, surface, NULL);
+        vkDestroyInstance(instance, NULL);
+        xcb_destroy_window(connection, window);
+        xcb_disconnect(connection);
+        printf("PASS stage=create-destroy cycles=%llu\n",
+               (unsigned long long)create_destroy_cycles);
+        printf("PASS stage=clean-exit\n");
+        return 0;
+    }
 
     uint32_t swapchain_image_count = 0;
     CHECK_VK(vkGetSwapchainImagesKHR(device, swapchain,

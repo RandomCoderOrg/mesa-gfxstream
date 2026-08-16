@@ -45,6 +45,7 @@ cc -O2 -Wall -Wextra vulkan-xcb-present.c -o vulkan-xcb-present \
 
 ./vulkan-xcb-present --hold-ms 0
 ./vulkan-xcb-present --frames 60 --hold-ms 0
+./vulkan-xcb-present --create-destroy-cycles 100 --hold-ms 0
 ```
 
 A passing run must satisfy all of these conditions:
@@ -58,6 +59,11 @@ A passing run must satisfy all of these conditions:
 
 The visual and server-log gates are required. Vulkan returning success alone
 does not prove correct channel semantics or zero-copy/offloaded presentation.
+
+`--create-destroy-cycles` is a non-rendering lifecycle mode. It creates and
+immediately destroys each swapchain before any acquire or Present, exercising
+the event-thread startup/destruction boundary without allocating AHB images.
+Every requested cycle and `PASS stage=clean-exit` are mandatory.
 
 ## AHardwareBuffer transport
 

@@ -112,6 +112,13 @@
       "serverPresentCopyAttempts": 57,
       "cpuWaitFallbackFrames": 4,
       "cpuWaitFallbackCleanExit": true
+    },
+    "swapchainThreadLifecycle": {
+      "createDestroyBeforeAcquireCycles": 100,
+      "cleanExit": true,
+      "postFixPresentFrames": 60,
+      "postFixPresentFps": 62.28,
+      "postFixPresentCleanExit": true
     }
   },
   "qualification": "negotiated-explicit-acquire-pass",

@@ -1,0 +1,106 @@
+From: uDroid graphics runtime
+Subject: [PATCH] X11 WSI: own the Present event thread lifecycle
+
+Initialize the special-event handle and worker state, mark the worker running
+before std::thread construction returns, and use joinability rather than a
+worker-written flag to decide whether destruction must join. Validate Present
+event selection once during swapchain setup and unwind the registration if
+thread construction fails. Reacquire the status lock before publishing a lost
+connection from the event thread.
+---
+diff --git a/wsi/x11/swapchain.cpp b/wsi/x11/swapchain.cpp
+--- a/wsi/x11/swapchain.cpp
++++ b/wsi/x11/swapchain.cpp
+@@ -188,6 +188,8 @@
+    , m_ahb_image_format(VK_FORMAT_UNDEFINED)
+    , m_ahb_dri3_modifier(0)
+    , m_explicit_sync_enabled(false)
++   , m_special_event(nullptr)
++   , m_present_event_thread_run(false)
+    , m_thread_status_lock()
+    , m_thread_status_cond()
+ {
+@@ -197,7 +199,7 @@
+ {
+    auto thread_status_lock = std::unique_lock<std::mutex>(m_thread_status_lock);
+ 
+-   if (m_present_event_thread_run)
++   if (m_present_event_thread.joinable())
+    {
+       m_present_event_thread_run = false;
+       /* xcb_wait_for_special_event is not interrupted by the condition
+@@ -216,7 +218,11 @@
+       thread_status_lock.lock();
+    }
+ 
+-   xcb_unregister_for_special_event(m_connection, m_special_event);
++   if (m_special_event != nullptr)
++   {
++      xcb_unregister_for_special_event(m_connection, m_special_event);
++      m_special_event = nullptr;
++   }
+ 
+    thread_status_lock.unlock();
+ 
+@@ -468,8 +474,6 @@
+ void swapchain::present_event_thread()
+ {
+    auto thread_status_lock = std::unique_lock<std::mutex>(m_thread_status_lock);
+-   m_present_event_thread_run = true;
+-
+    while (m_present_event_thread_run)
+    {
+       auto assume_forward_progress = false;
+@@ -503,6 +507,7 @@
+       auto event = xcb_wait_for_special_event(m_connection, m_special_event);
+       if (event == nullptr)
+       {
++         thread_status_lock.lock();
+          set_error_state(VK_ERROR_SURFACE_LOST_KHR);
+          break;
+       }
+@@ -862,20 +867,39 @@
+ 
+    auto eid = xcb_generate_id(m_connection);
+    m_special_event = xcb_register_for_special_xge(m_connection, &xcb_present_id, eid, nullptr);
+-   xcb_present_select_input(m_connection, eid, m_window,
+-                            XCB_PRESENT_EVENT_MASK_IDLE_NOTIFY | XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY |
+-                               XCB_PRESENT_EVENT_MASK_CONFIGURE_NOTIFY);
++   if (m_special_event == nullptr)
++      return VK_ERROR_INITIALIZATION_FAILED;
++
++   auto select_cookie = xcb_present_select_input_checked(
++      m_connection, eid, m_window,
++      XCB_PRESENT_EVENT_MASK_IDLE_NOTIFY | XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY |
++         XCB_PRESENT_EVENT_MASK_CONFIGURE_NOTIFY);
++   auto *select_error = xcb_request_check(m_connection, select_cookie);
++   if (select_error != nullptr)
++   {
++      free(select_error);
++      xcb_unregister_for_special_event(m_connection, m_special_event);
++      m_special_event = nullptr;
++      return VK_ERROR_SURFACE_LOST_KHR;
++   }
+ 
++   m_present_event_thread_run = true;
+    try
+    {
+       m_present_event_thread = std::thread(&swapchain::present_event_thread, this);
+    }
+    catch (const std::system_error &)
+    {
++      m_present_event_thread_run = false;
++      xcb_unregister_for_special_event(m_connection, m_special_event);
++      m_special_event = nullptr;
+       return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    catch (const std::bad_alloc &)
+    {
++      m_present_event_thread_run = false;
++      xcb_unregister_for_special_event(m_connection, m_special_event);
++      m_special_event = nullptr;
+       return VK_ERROR_INITIALIZATION_FAILED;
+    }
+ 
+-- 
+2.50.1
