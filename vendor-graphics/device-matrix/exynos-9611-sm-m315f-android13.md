@@ -9,6 +9,7 @@ file.
 | Boundary | Result | Evidence |
 | --- | --- | --- |
 | App permissions | Pass | `/dev/mali0` and `/dev/ion` are readable and writable from the uDroid app domain |
+| Packaged HAL selection | Pass | With `UDROID_VULKAN_HAL` unset, `udroid-gpu-run` found the sole readable 64-bit HAL at `/vendor/lib64/hw/vulkan.universal9611.so` and reported Mali-G72, Vulkan 1.1.213 |
 | Vendor Vulkan | Pass | Mali-G72, Vulkan 1.1.213 through the rootless sysvk/libhybris delegate |
 | AHardwareBuffer lifecycle | Pass | 90/90 allocations and imports across odd and aligned widths |
 | Narrow AHB provider transport | Pass | `libnativewindow.so` completed 9/9 allocate/send/receive/release cases; `libandroid.so` aborted while loading unrelated framework dependencies |
