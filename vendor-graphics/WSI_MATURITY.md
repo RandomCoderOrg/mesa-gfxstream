@@ -42,6 +42,7 @@ flowchart LR
 | Present thread ownership | Fixed | Special-event and run state are initialized, thread construction owns the run transition, teardown joins by `joinable()`, and partial setup unwinds registrations |
 | Immediate swapchain teardown | Pass | 100/100 swapchains were created and destroyed before first acquire/Present with a clean process exit; a post-fix 60-frame regression passed at 62.28 FPS |
 | Resize and swapchain retirement | Pass | 20/20 independent processes resized 480x320 to 576x384, created a replacement with `oldSwapchain`, rendered afterward, and exited cleanly; Termux:X11 reported 69/69 sampled Present copies GPU-offloaded |
+| Lost X surface capability query | Fixed | Before the fix, a destroyed window returned `VK_SUCCESS` and extent 4294967295x4294967295; afterward 25/25 queries returned `VK_ERROR_SURFACE_LOST_KHR`, followed by a clean 60-frame regression at 62.89 FPS |
 
 ## Promotion gates still open
 
@@ -53,9 +54,9 @@ flowchart LR
    signals.
 2. Advertise only presentation modes whose semantics are implemented. MAILBOX
    needs real queued-frame replacement; until then FIFO is the release target.
-3. Correctly handle surface loss, Present serial wrap, and X connection
-   teardown under repeated stress. Resize and retired-swapchain replacement now
-   pass their first deterministic stress gate.
+3. Correctly handle asynchronous surface loss, Present serial wrap, and X
+   connection teardown under repeated stress. Synchronous lost-window queries,
+   resize, and retired-swapchain replacement now pass deterministic gates.
 4. Move the protocol probe and WSI failure reason into automatic profile
    selection so a mismatched or older server selects another graphics route
    before a desktop is launched.

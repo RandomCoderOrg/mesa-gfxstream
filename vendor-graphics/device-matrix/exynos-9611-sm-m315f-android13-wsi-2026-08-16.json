@@ -130,6 +130,17 @@
       "cleanExits": 20,
       "sampledServerGpuOffloadedCopies": 69,
       "sampledServerPresentCopyAttempts": 69
+    },
+    "lostSurfaceCapabilityQuery": {
+      "preFixResult": "VK_SUCCESS",
+      "preFixExtent": "4294967295x4294967295",
+      "expectedResult": "VK_ERROR_SURFACE_LOST_KHR",
+      "postFixProcesses": 25,
+      "postFixPasses": 25,
+      "postFixCleanExits": 25,
+      "postFixRegressionFrames": 60,
+      "postFixRegressionFps": 62.89,
+      "postFixRegressionCleanExit": true
     }
   },
   "qualification": "negotiated-explicit-acquire-pass",

@@ -60,6 +60,7 @@ int main(int argc, char **argv)
     uint64_t frame_count = 1;
     uint64_t create_destroy_cycles = 0;
     uint64_t resize_after_frames = 0;
+    int destroy_window_before_capabilities = 0;
     for (int index = 1; index < argc; ++index) {
         if (strcmp(argv[index], "--hold-ms") == 0 && index + 1 < argc) {
             hold_ms = parse_u64(argv[++index], "--hold-ms");
@@ -90,11 +91,15 @@ int main(int argc, char **argv)
                         (unsigned long long)resize_after_frames);
                 return 2;
             }
+        } else if (strcmp(argv[index],
+                          "--destroy-window-before-capabilities") == 0) {
+            destroy_window_before_capabilities = 1;
         } else {
             fprintf(stderr,
                     "usage: %s [--hold-ms MILLISECONDS] [--frames COUNT] "
                     "[--create-destroy-cycles COUNT] "
-                    "[--resize-after-frames COUNT]\n",
+                    "[--resize-after-frames COUNT] "
+                    "[--destroy-window-before-capabilities]\n",
                     argv[0]);
             return 2;
         }
@@ -228,7 +233,42 @@ int main(int argc, char **argv)
     vkGetDeviceQueue(device, queue_family, 0, &queue);
     printf("PASS stage=vulkan-device queue_family=%u\n", queue_family);
 
-    VkSurfaceCapabilitiesKHR capabilities;
+    if (destroy_window_before_capabilities) {
+        xcb_void_cookie_t destroy_cookie =
+            xcb_destroy_window_checked(connection, window);
+        xcb_generic_error_t *destroy_error =
+            xcb_request_check(connection, destroy_cookie);
+        if (destroy_error != NULL) {
+            fprintf(stderr,
+                    "FAIL stage=destroy-window xcb_error=%u\n",
+                    destroy_error->error_code);
+            free(destroy_error);
+            return 1;
+        }
+
+        VkSurfaceCapabilitiesKHR lost_capabilities = {0};
+        VkResult lost_result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+            physical, surface, &lost_capabilities);
+        if (lost_result != VK_ERROR_SURFACE_LOST_KHR) {
+            fprintf(stderr,
+                    "FAIL stage=lost-surface-capabilities expected=%d actual=%d extent=%ux%u\n",
+                    VK_ERROR_SURFACE_LOST_KHR, lost_result,
+                    lost_capabilities.currentExtent.width,
+                    lost_capabilities.currentExtent.height);
+            return 1;
+        }
+
+        vkDestroyDevice(device, NULL);
+        vkDestroySurfaceKHR(instance, surface, NULL);
+        vkDestroyInstance(instance, NULL);
+        xcb_disconnect(connection);
+        printf("PASS stage=lost-surface-capabilities result=%d\n",
+               lost_result);
+        printf("PASS stage=clean-exit\n");
+        return 0;
+    }
+
+    VkSurfaceCapabilitiesKHR capabilities = {0};
     CHECK_VK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
                  physical, surface, &capabilities),
              "surface-capabilities");

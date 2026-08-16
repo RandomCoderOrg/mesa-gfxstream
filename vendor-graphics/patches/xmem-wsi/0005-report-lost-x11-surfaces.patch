@@ -1,0 +1,37 @@
+From: uDroid graphics runtime
+Subject: [PATCH] X11 WSI: report lost surfaces from capability queries
+
+An X geometry query has no reply after its window is destroyed. Propagate that
+failure as VK_ERROR_SURFACE_LOST_KHR instead of returning success with the
+undefined currentExtent left by the common capability initializer. Apply the
+same propagation to the capabilities2 entry point.
+---
+diff --git a/wsi/x11/surface_properties.cpp b/wsi/x11/surface_properties.cpp
+--- a/wsi/x11/surface_properties.cpp
++++ b/wsi/x11/surface_properties.cpp
+@@ -87,8 +87,12 @@
+    surface_capabilities->minImageCount = 4;
+ 
+    int depth;
+-   specific_surface->get_size_and_depth(&surface_capabilities->currentExtent.width,
+-                                        &surface_capabilities->currentExtent.height, &depth);
++   if (!specific_surface->get_size_and_depth(
++          &surface_capabilities->currentExtent.width,
++          &surface_capabilities->currentExtent.height, &depth))
++   {
++      return VK_ERROR_SURFACE_LOST_KHR;
++   }
+ 
+    /* Composite alpha */
+    surface_capabilities->supportedCompositeAlpha = static_cast<VkCompositeAlphaFlagBitsKHR>(
+@@ -105,7 +109,7 @@
+    TRY(check_surface_present_mode_query_is_supported(pSurfaceInfo, m_supported_modes));
+ 
+    /* Image count limits */
+-   get_surface_capabilities(physical_device, &pSurfaceCapabilities->surfaceCapabilities);
++   TRY(get_surface_capabilities(physical_device, &pSurfaceCapabilities->surfaceCapabilities));
+ 
+    m_compatible_present_modes.get_surface_present_mode_compatibility_common(pSurfaceInfo, pSurfaceCapabilities);
+ 
+-- 
+2.50.1
