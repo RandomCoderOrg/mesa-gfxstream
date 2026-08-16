@@ -26,3 +26,24 @@ A passing run must satisfy all of these conditions:
 
 The visual and server-log gates are required. Vulkan returning success alone
 does not prove correct channel semantics or zero-copy/offloaded presentation.
+
+## AHardwareBuffer transport
+
+`ahardwarebuffer-transport.c` measures allocation, CPU mapping, explicit unlock
+fence completion, Unix-socket handle transfer, receiving, and content integrity
+across aligned and deliberately odd widths. Each case emits one JSON line with
+stage timings and hashes so regressions can be graphed without launching a
+desktop application.
+
+The probe must be linked through the same libhybris AHardwareBuffer provider as
+the runtime. Provider discovery is a separate gate: a library existing on disk
+does not prove that its Bionic ABI and TLS behavior are safe in the guest.
+
+Run ten iterations across all default widths with:
+
+```sh
+./ahardwarebuffer-transport 10 32
+```
+
+Use `UDROID_AHB_TRANSPORT_ONLY=1` to isolate allocation and socket transport,
+or `UDROID_AHB_SOURCE_ONLY=1` to stop after the producer sends its handle.

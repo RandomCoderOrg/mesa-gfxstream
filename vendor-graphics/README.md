@@ -24,3 +24,15 @@ The report records Android identity, kernel/runtime details, graphics device
 nodes, Vulkan HAL candidates, and what the uDroid app domain can actually
 access. It intentionally does not infer that graphics work merely because a
 Mali, Adreno, or PowerVR node exists.
+
+Derive a proposed runtime route from a baseline with:
+
+```sh
+jq -f vendor-graphics/tools/derive-runtime-profile.jq \
+  vendor-graphics/device-matrix/DEVICE.json
+```
+
+This result is a probe plan, not approval. It chooses standard DRM ahead of the
+vendor bridge when a writable render node exists and otherwise proposes the
+vendor Vulkan AHardwareBuffer route only when its prerequisites are visible.
+Every listed runtime probe must still pass on the current Android build.

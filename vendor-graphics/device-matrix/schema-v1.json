@@ -40,10 +40,11 @@
     },
     "discovery": {
       "type": "object",
-      "required": ["deviceNodes", "vulkanHalCandidates"],
+      "required": ["deviceNodes", "vulkanHalCandidates", "androidLibraryCandidates"],
       "properties": {
         "deviceNodes": { "$ref": "#/$defs/pathListings" },
-        "vulkanHalCandidates": { "$ref": "#/$defs/pathListings" }
+        "vulkanHalCandidates": { "$ref": "#/$defs/pathListings" },
+        "androidLibraryCandidates": { "$ref": "#/$defs/pathListings" }
       },
       "additionalProperties": false
     },

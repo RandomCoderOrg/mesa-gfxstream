@@ -92,42 +92,59 @@ device_id=$(printf '%s\n%s\n%s\n%s\n' \
     "$manufacturer" "$model" "$device" "$build_fingerprint" |
     shasum -a 256 | awk '{print substr($1, 1, 16)}')
 
+# Probe families rather than one device generation. Missing glob matches are
+# filtered by the existence check and duplicates are collapsed before listing.
 # The remote scripts are intentionally single quoted so expansion happens on
 # Android rather than on the host running this collector.
 # shellcheck disable=SC2016
 node_report=$(shell_line sh -c '
-for path in /dev/mali0 /dev/kgsl-3d0 /dev/dri/renderD128 /dev/dri/card0 \
-            /dev/dma_heap/system /dev/dma_heap/system-uncached /dev/ion; do
+for path in /dev/mali* /dev/kgsl* /dev/pvr* /dev/dri/renderD* /dev/dri/card* \
+            /dev/dma_heap/* /dev/ion; do
     if [ -e "$path" ]; then
         listing=$(ls -lZ "$path" 2>/dev/null || ls -l "$path" 2>/dev/null || true)
         printf "%s|%s\n" "$path" "$listing"
     fi
-done')
+done' | sort -u)
 
 # shellcheck disable=SC2016
 hal_report=$(shell_line sh -c '
-for directory in /vendor/lib64/hw /odm/lib64/hw /system/lib64/hw; do
+for directory in /vendor/lib64/hw /odm/lib64/hw /system/lib64/hw \
+                 /vendor/lib/hw /odm/lib/hw /system/lib/hw; do
     [ -d "$directory" ] || continue
     for path in "$directory"/vulkan*.so; do
         [ -e "$path" ] || continue
         listing=$(ls -l "$path" 2>/dev/null || true)
         printf "%s|%s\n" "$path" "$listing"
     done
-done')
+done' | sort -u)
+
+# These are only provider candidates. A later in-process probe must dlopen the
+# library through libhybris and resolve every AHardwareBuffer entry point.
+# shellcheck disable=SC2016
+android_library_report=$(shell_line sh -c '
+for path in /system/lib64/libnativewindow.so /system/lib64/libandroid.so \
+            /vendor/lib64/libnativewindow.so /vendor/lib64/libandroid.so \
+            /system/lib/libnativewindow.so /system/lib/libandroid.so \
+            /vendor/lib/libnativewindow.so /vendor/lib/libandroid.so; do
+    [ -e "$path" ] || continue
+    listing=$(ls -lZ "$path" 2>/dev/null || ls -l "$path" 2>/dev/null || true)
+    printf "%s|%s\n" "$path" "$listing"
+done' | sort -u)
 
 run_as_identity=$("${adb_cmd[@]}" shell run-as "$package" id 2>/dev/null | tr -d '\r' || true)
 run_as_access=
 if [[ -n $run_as_identity ]]; then
     # shellcheck disable=SC2016
     run_as_access=$("${adb_cmd[@]}" shell run-as "$package" sh -c '
-for path in /dev/mali0 /dev/kgsl-3d0 /dev/dri/renderD128 /dev/dri/card0 \
-            /dev/dma_heap/system /dev/dma_heap/system-uncached /dev/ion; do
+for path in /dev/mali* /dev/kgsl* /dev/pvr* /dev/dri/renderD* /dev/dri/card* \
+            /dev/dma_heap/* /dev/ion; do
+    [ -e "$path" ] || continue
     exists=false; readable=false; writable=false
     [ -e "$path" ] && exists=true
     [ -r "$path" ] && readable=true
     [ -w "$path" ] && writable=true
     printf "%s|%s|%s|%s\n" "$path" "$exists" "$readable" "$writable"
-done' 2>/dev/null | tr -d '\r' || true)
+done' 2>/dev/null | tr -d '\r' | sort -u || true)
 fi
 
 report=$(jq -n \
@@ -155,6 +172,7 @@ report=$(jq -n \
     --arg runAsIdentity "$run_as_identity" \
     --arg nodes "$node_report" \
     --arg hals "$hal_report" \
+    --arg androidLibraries "$android_library_report" \
     --arg access "$run_as_access" '
     def lines($value): $value | split("\n") | map(select(length > 0));
     {
@@ -182,7 +200,8 @@ report=$(jq -n \
       },
       discovery: {
         deviceNodes: (lines($nodes) | map(split("|") | {path: .[0], listing: .[1]})),
-        vulkanHalCandidates: (lines($hals) | map(split("|") | {path: .[0], listing: .[1]}))
+        vulkanHalCandidates: (lines($hals) | map(split("|") | {path: .[0], listing: .[1]})),
+        androidLibraryCandidates: (lines($androidLibraries) | map(split("|") | {path: .[0], listing: .[1]}))
       },
       appDomain: {
         package: $package,
