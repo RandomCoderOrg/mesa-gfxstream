@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage()
+{
+    cat >&2 <<'EOF'
+Usage: udroid-gpu-probe [OPTIONS]
+
+Run the installed graphics component's device qualification suite.
+
+Options:
+  --profile NAME          runtime profile to exercise
+  --qualification LEVEL  smoke or full (default: smoke)
+  --output FILE           schema-v2 JSON result (default: stdout)
+  --log FILE              raw probe transcript
+  -h, --help              show this help
+
+DISPLAY must refer to a compatible uDroid or Termux:X11 server.
+EOF
+}
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+runtime_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
+runner=${UDROID_GPU_RUN:-$runtime_root/bin/udroid-gpu-run}
+qualifier=${UDROID_WSI_QUALIFIER:-$runtime_root/libexec/run-wsi-qualification.sh}
+present_probe=${UDROID_PRESENT_PROBE:-$runtime_root/libexec/x11-ahb-present-probe}
+protocol_probe=${UDROID_PROTOCOL_PROBE:-$runtime_root/libexec/x11-buffer-transport-protocol}
+stats_probe=${UDROID_PRESENT_STATS_PROBE:-$runtime_root/libexec/x11-present-stats}
+
+profile=vendor-vulkan:ginkage-ahb
+qualification=smoke
+output=-
+log=
+
+while (($#)); do
+    case "$1" in
+        --profile)
+            (($# >= 2)) || { usage; exit 2; }
+            profile=$2
+            shift 2
+            ;;
+        --qualification)
+            (($# >= 2)) || { usage; exit 2; }
+            qualification=$2
+            shift 2
+            ;;
+        --output)
+            (($# >= 2)) || { usage; exit 2; }
+            output=$2
+            shift 2
+            ;;
+        --log)
+            (($# >= 2)) || { usage; exit 2; }
+            log=$2
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+case "$qualification" in
+    smoke|full) ;;
+    *)
+        printf 'udroid-gpu-probe: unknown qualification level: %s\n' "$qualification" >&2
+        exit 2
+        ;;
+esac
+
+[[ -n ${DISPLAY:-} ]] || {
+    printf 'udroid-gpu-probe: DISPLAY is not set\n' >&2
+    exit 3
+}
+
+for required in "$runner" "$qualifier" "$present_probe" "$protocol_probe" "$stats_probe"; do
+    [[ -x $required ]] || {
+        printf 'udroid-gpu-probe: required executable is missing: %s\n' "$required" >&2
+        exit 3
+    }
+done
+
+command=(
+    "$qualifier"
+    --present-probe "$present_probe"
+    --protocol-probe "$protocol_probe"
+    --stats-probe "$stats_probe"
+    --profile "$qualification"
+    --output "$output"
+)
+if [[ -n $log ]]; then
+    command+=(--log "$log")
+fi
+
+exec "$runner" --profile "$profile" -- "${command[@]}"

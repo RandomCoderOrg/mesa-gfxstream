@@ -4,6 +4,12 @@ These programs isolate one graphics boundary at a time. They are deliberately
 smaller than a desktop environment or browser so failures can be attributed to
 discovery, allocation, import, synchronization, presentation, or API support.
 
+`runtime/bin/udroid-gpu-probe` is the packaged entrypoint for the combined
+qualification suite. It selects the requested component profile through
+`udroid-gpu-run`, then invokes the schema-v2 suite using component-relative
+probe paths. uDroid uses `--qualification smoke --output -` for first-run
+approval; Termux users can select `full` and retain the raw log.
+
 ## X11 buffer-transport protocol
 
 `x11-buffer-transport-protocol.c` reads the paired server's versioned root
