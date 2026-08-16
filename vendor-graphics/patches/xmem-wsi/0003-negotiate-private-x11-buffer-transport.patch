@@ -1,0 +1,163 @@
+From: uDroid graphics runtime
+Subject: [PATCH] X11 WSI: negotiate the private buffer transport
+
+Do not send private AHardwareBuffer socket modifiers to an arbitrary DRI3
+server. Read the paired server's versioned root-window property first, require
+the AHB and GPU-copy capabilities, and consume the modifier values published by
+the server. Select sync-file acquire fences automatically when advertised while
+retaining an explicit CPU-wait fallback. A lab-only legacy override remains
+available for older patched servers.
+---
+diff --git a/wsi/x11/swapchain.cpp b/wsi/x11/swapchain.cpp
+--- a/wsi/x11/swapchain.cpp
++++ b/wsi/x11/swapchain.cpp
+@@ -96,7 +96,71 @@ struct x11_image_data
+ #define X11_SWAPCHAIN_MAX_PENDING_COMPLETIONS 128
+ 
+ static constexpr int AHB_HANDSHAKE_TIMEOUT_MS = 3000;
++static constexpr char BUFFER_TRANSPORT_ATOM[] = "_UDROID_X11_BUFFER_TRANSPORT";
+ 
++enum : uint32_t
++{
++   TRANSPORT_AHB_SOCKET = 1U << 0,
++   TRANSPORT_AHB_RGBA = 1U << 1,
++   TRANSPORT_SYNC_FILE_ACQUIRE = 1U << 2,
++   TRANSPORT_GPU_COPY = 1U << 3,
++};
++
++struct buffer_transport_protocol
++{
++   uint32_t version;
++   uint32_t capabilities;
++   uint64_t bgra_modifier;
++   uint64_t rgba_modifier;
++};
++
++static bool query_buffer_transport_protocol(xcb_connection_t *connection, xcb_window_t window,
++                                            buffer_transport_protocol &protocol)
++{
++   auto geometry_cookie = xcb_get_geometry(connection, window);
++   auto *geometry = xcb_get_geometry_reply(connection, geometry_cookie, nullptr);
++   if (geometry == nullptr)
++   {
++      WSI_LOG_ERROR("Could not resolve the X11 root window for buffer transport negotiation");
++      return false;
++   }
++   const xcb_window_t root = geometry->root;
++   free(geometry);
++
++   auto atom_cookie = xcb_intern_atom(connection, true, sizeof(BUFFER_TRANSPORT_ATOM) - 1,
++                                      BUFFER_TRANSPORT_ATOM);
++   auto *atom_reply = xcb_intern_atom_reply(connection, atom_cookie, nullptr);
++   if (atom_reply == nullptr || atom_reply->atom == XCB_ATOM_NONE)
++   {
++      free(atom_reply);
++      WSI_LOG_ERROR("X11 server does not advertise %s", BUFFER_TRANSPORT_ATOM);
++      return false;
++   }
++   const xcb_atom_t property_atom = atom_reply->atom;
++   free(atom_reply);
++
++   auto property_cookie = xcb_get_property(connection, false, root, property_atom,
++                                           XCB_ATOM_CARDINAL, 0, 6);
++   auto *property_reply = xcb_get_property_reply(connection, property_cookie, nullptr);
++   if (property_reply == nullptr || property_reply->type != XCB_ATOM_CARDINAL ||
++       property_reply->format != 32 || property_reply->value_len < 6)
++   {
++      free(property_reply);
++      WSI_LOG_ERROR("X11 buffer transport property is absent or malformed");
++      return false;
++   }
++
++   const auto *words = reinterpret_cast<const uint32_t *>(xcb_get_property_value(property_reply));
++   protocol.version = words[0];
++   protocol.capabilities = words[1];
++   protocol.bgra_modifier = static_cast<uint64_t>(words[2]) |
++                            (static_cast<uint64_t>(words[3]) << 32);
++   protocol.rgba_modifier = static_cast<uint64_t>(words[4]) |
++                            (static_cast<uint64_t>(words[5]) << 32);
++   free(property_reply);
++   return true;
++}
++
+ static bool wait_for_socket_event(int fd, short events)
+ {
+    pollfd descriptor = { fd, events, 0 };
+@@ -702,12 +766,59 @@ VkResult swapchain::init_platform(VkDevice device, const VkSwapchainCreateInfoK
+    m_device_data.instance_data.disp.GetPhysicalDeviceMemoryProperties2KHR(m_device_data.physical_device,
+                                                                           &m_memory_props);
+    if (m_surface == nullptr || HardwareBuffer_sendHandleToUnixSocket == nullptr || HardwareBuffer_release == nullptr)
++   {
++      return VK_ERROR_INITIALIZATION_FAILED;
++   }
++
++   buffer_transport_protocol protocol{};
++   const char *protocol_mode = getenv("UDROID_X11_PROTOCOL");
++   const bool legacy_protocol = protocol_mode != nullptr && strcmp(protocol_mode, "legacy") == 0;
++   if (legacy_protocol)
++   {
++      protocol.version = 1;
++      protocol.capabilities = TRANSPORT_AHB_SOCKET | TRANSPORT_AHB_RGBA | TRANSPORT_GPU_COPY;
++      protocol.bgra_modifier = 1255;
++      protocol.rgba_modifier = 1257;
++      WSI_LOG_INFO("Using explicitly requested legacy X11 AHardwareBuffer protocol");
++   }
++   else if (!query_buffer_transport_protocol(m_connection, m_window, protocol))
+    {
++      WSI_LOG_ERROR("Refusing the private AHardwareBuffer transport without peer negotiation");
+       return VK_ERROR_INITIALIZATION_FAILED;
+    }
+ 
++   const uint32_t required_capabilities =
++      TRANSPORT_AHB_SOCKET | TRANSPORT_AHB_RGBA | TRANSPORT_GPU_COPY;
++   if (protocol.version != 1 ||
++       (protocol.capabilities & required_capabilities) != required_capabilities ||
++       protocol.bgra_modifier == 0 || protocol.rgba_modifier == 0)
++   {
++      WSI_LOG_ERROR("Unsupported X11 buffer transport protocol version %u, capabilities 0x%x",
++                    protocol.version, protocol.capabilities);
++      return VK_ERROR_INITIALIZATION_FAILED;
++   }
++
++   const bool peer_explicit_sync =
++      (protocol.capabilities & TRANSPORT_SYNC_FILE_ACQUIRE) != 0;
+    const char *explicit_sync = getenv("UDROID_X11_EXPLICIT_SYNC");
+-   m_explicit_sync_enabled = explicit_sync != nullptr && strcmp(explicit_sync, "1") == 0;
++   if (explicit_sync == nullptr)
++   {
++      m_explicit_sync_enabled = peer_explicit_sync;
++   }
++   else if (strcmp(explicit_sync, "0") == 0)
++   {
++      m_explicit_sync_enabled = false;
++   }
++   else if (strcmp(explicit_sync, "1") == 0 &&
++            (peer_explicit_sync || legacy_protocol))
++   {
++      m_explicit_sync_enabled = true;
++   }
++   else
++   {
++      WSI_LOG_ERROR("UDROID_X11_EXPLICIT_SYNC requests an unsupported or invalid mode");
++      return VK_ERROR_INITIALIZATION_FAILED;
++   }
+    WSI_LOG_INFO("X11 acquire synchronization: %s",
+                 m_explicit_sync_enabled ? "sync-file fence" : "CPU Vulkan fence wait");
+ 
+@@ -726,12 +837,12 @@ VkResult swapchain::init_platform(VkDevice device, const VkSwapchainCreateInfoK
+    if (m_ahb_image_format == VK_FORMAT_R8G8B8A8_UNORM ||
+        m_ahb_image_format == VK_FORMAT_R8G8B8A8_SRGB)
+    {
+-      m_ahb_dri3_modifier = 1257;
++      m_ahb_dri3_modifier = protocol.rgba_modifier;
+    }
+    else if (m_ahb_image_format == VK_FORMAT_B8G8R8A8_UNORM ||
+             m_ahb_image_format == VK_FORMAT_B8G8R8A8_SRGB)
+    {
+-      m_ahb_dri3_modifier = 1255;
++      m_ahb_dri3_modifier = protocol.bgra_modifier;
+    }
+    else
+    {
+-- 
+2.50.1

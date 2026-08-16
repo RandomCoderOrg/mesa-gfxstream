@@ -37,24 +37,26 @@ flowchart LR
 | Contended renderer lock clock | Fixed | 25/25 on-device probes passed; waiting-thread CPU fell from 49,760 us to 190 us on average while lock latency remained approximately 50 ms |
 | GPU-copy hot-path logging | Fixed | Normal mode emitted 0 per-rectangle logs after the gate, versus 58 writes during the earlier one-second 60-frame run |
 | Serialized steady Present | Pass | Five consecutive 60-frame runs completed cleanly at 60.10-63.14 FPS (61.79 FPS mean) with explicit acquire synchronization enabled |
+| Paired protocol discovery | Pass | Root property probe reported version 1, all four capability bits, modifiers 1255/1257, and `compatible=true` |
+| Automatic acquire selection | Pass | With no sync override, xMeM selected a sync-file fence and completed 60 frames at 60.18 FPS with a clean exit; `UDROID_X11_EXPLICIT_SYNC=0` selected the CPU-wait fallback and also exited cleanly |
 
 ## Promotion gates still open
 
-1. Promote the validated explicit acquire fence from an opt-in only after the
-   paired WSI/server protocol is versioned and runtime probing has selected a
-   matching server. The CPU wait remains the mismatch fallback.
-2. Replace the server's synchronous GLES fence wait with an asynchronous
+1. Replace the server's synchronous GLES fence wait with an asynchronous
    `EGL_ANDROID_native_fence_sync` wait without weakening Present IdleNotify's
    pixmap-reuse guarantee. The source is safe today, but the renderer holds the
    shared destination lock while waiting; an async design must also prevent X
    CPU writes to root or redirected destinations until that native fence
    signals.
-3. Advertise only presentation modes whose semantics are implemented. MAILBOX
+2. Advertise only presentation modes whose semantics are implemented. MAILBOX
    needs real queued-frame replacement; until then FIFO is the release target.
-4. Correctly handle resize, surface loss, retired swapchains, Present serial
+3. Correctly handle resize, surface loss, retired swapchains, Present serial
    wrap, and X connection teardown under repeated stress.
-5. Version the paired private transport and reject mismatched WSI/server builds
-   with a clear diagnostic rather than corrupted output.
+4. Move the protocol probe and WSI failure reason into automatic profile
+   selection so a mismatched or older server selects another graphics route
+   before a desktop is launched.
+5. Repeat the complete ladder on the Tensor, second Exynos, and MediaTek test
+   devices before promoting this profile beyond experimental status.
 
 The synchronization model follows Android's acquire/release fence contract:
 producers must not reuse a buffer until its consumer is done. In this copy-based

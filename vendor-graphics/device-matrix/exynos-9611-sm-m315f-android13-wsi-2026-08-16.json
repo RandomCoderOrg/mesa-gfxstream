@@ -94,8 +94,26 @@
       },
       "explicitAcquire": true,
       "normalModePerRectangleLogs": 0
+    },
+    "bufferTransportProtocol": {
+      "property": "_UDROID_X11_BUFFER_TRANSPORT",
+      "version": 1,
+      "capabilities": 15,
+      "bgraModifier": 1255,
+      "rgbaModifier": 1257,
+      "compatible": true
+    },
+    "automaticAcquireSelection": {
+      "frames": 60,
+      "fps": 60.18,
+      "selected": "sync-file-fence",
+      "cleanExit": true,
+      "serverGpuOffloadedCopies": 57,
+      "serverPresentCopyAttempts": 57,
+      "cpuWaitFallbackFrames": 4,
+      "cpuWaitFallbackCleanExit": true
     }
   },
-  "qualification": "explicit-acquire-and-lock-clock-pass",
-  "nextGate": "async-release-and-protocol-version"
+  "qualification": "negotiated-explicit-acquire-pass",
+  "nextGate": "async-release-and-surface-lifecycle"
 }

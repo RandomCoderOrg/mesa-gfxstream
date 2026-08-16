@@ -4,6 +4,25 @@ These programs isolate one graphics boundary at a time. They are deliberately
 smaller than a desktop environment or browser so failures can be attributed to
 discovery, allocation, import, synchronization, presentation, or API support.
 
+## X11 buffer-transport protocol
+
+`x11-buffer-transport-protocol.c` reads the paired server's versioned root
+property without loading Vulkan or allocating an AHardwareBuffer. Its JSON
+output exposes every capability bit and both private transport identifiers, so
+the runtime can reject a mismatched server before starting a compositor.
+
+```sh
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+  x11-buffer-transport-protocol.c -o x11-buffer-transport-protocol -lxcb
+DISPLAY=:0 ./x11-buffer-transport-protocol
+```
+
+A release-compatible result requires `propertyPresent=true`, `version=1`, all
+of `ahbSocket`, `rgba`, and `gpuCopy` to be true, non-zero BGRA/RGBA modifier
+values, and `compatible=true`. `syncFileAcquire` controls whether xMeM may
+enable explicit acquire fences automatically; its absence does not invalidate
+the CPU-wait presentation fallback.
+
 ## Vulkan XCB Present
 
 `vulkan-xcb-present.c` creates a Vulkan XCB swapchain, clears one image red,
