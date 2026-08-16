@@ -33,8 +33,14 @@
       "termuxX11PresentCopies": 25,
       "imageViewPasses": 25,
       "termuxX11GpuOffloadedCopies": 25
+    },
+    "withheldAhbFault": {
+      "serverTimeoutMilliseconds": 3002,
+      "x11RecoveryMilliseconds": 0,
+      "x11RequestError": 11,
+      "serverResponsive": true
     }
   },
   "qualification": "direct-wsi-pass",
-  "nextGate": "bounded-ahb-handshake"
+  "nextGate": "explicit-present-sync"
 }

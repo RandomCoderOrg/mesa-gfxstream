@@ -1,29 +1,57 @@
 From: uDroid graphics runtime
-Subject: [PATCH] lorie: separate AHB content semantics from physical format
+Subject: [PATCH] lorie: harden private AHardwareBuffer DRI3 transport
 
 Private DRI3 modifier 1257 identifies an AHardwareBuffer whose content is
-already RGBA even if the ordinary X11 surface contract would imply a BGRA
-swizzle. Keep this semantic independent from the physical AHB format so vendor
-drivers can use their supported allocation format without swapping red/blue.
+already RGBA. Keep content semantics independent from physical format, and
+bound both acknowledgement and handle-receive phases with poll so a dead or
+mismatched producer cannot freeze the X server. Consume readable final messages
+even when POLLHUP is also reported, then validate data versus EOF. Preserve
+ownership explicitly when an import fails.
 ---
- lorie/src/main/cpp/lorie/InitOutput.c |  7 +++++--
- lorie/src/main/cpp/lorie/buffer.c     | 11 +++++++++--
- lorie/src/main/cpp/lorie/buffer.h     |  5 +++++
- 3 files changed, 19 insertions(+), 4 deletions(-)
-
 diff --git a/lorie/src/main/cpp/lorie/InitOutput.c b/lorie/src/main/cpp/lorie/InitOutput.c
-index 8d22666..70f8fd3 100644
+index 8d22666..72fe0f5 100644
 --- a/lorie/src/main/cpp/lorie/InitOutput.c
 +++ b/lorie/src/main/cpp/lorie/InitOutput.c
-@@ -1094,6 +1094,7 @@ static PixmapPtr loriePixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *
+@@ -14,6 +14,8 @@
+ 
+ #include <sys/eventfd.h>
+ #include <sys/errno.h>
++#include <poll.h>
++#include <sys/socket.h>
+ #include <libxcvt/libxcvt.h>
+ #include <X11/X.h>
+ #include <X11/Xmd.h>
+@@ -49,6 +51,20 @@ extern void android_shmem_sysv_shm_force(uint8_t enable);
+ extern DeviceIntPtr lorieMouse, lorieKeyboard;
+ 
+ #define CREATE_PIXMAP_USAGE_LORIEBUFFER_BACKED 5
++#define AHB_HANDSHAKE_TIMEOUT_MS 3000
++
++static int lorieWaitForSocketEvent(int fd, short events) {
++    struct pollfd descriptor = { .fd = fd, .events = events, .revents = 0 };
++    int result;
++    do {
++        result = poll(&descriptor, 1, AHB_HANDSHAKE_TIMEOUT_MS);
++    } while (result < 0 && errno == EINTR);
++
++    /* A final message can be readable together with POLLHUP. The caller must
++     * consume it and distinguish valid data from EOF. */
++    return result == 1 && (descriptor.revents & events) != 0 &&
++           (descriptor.revents & (POLLERR | POLLNVAL)) == 0;
++}
+ 
+ struct vblank {
+     struct xorg_list link;
+@@ -1094,13 +1110,16 @@ static PixmapPtr loriePixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *
  #define check(cond, msg, ...) if ((cond)) fail(msg, ##__VA_ARGS__)
      const CARD64 AHARDWAREBUFFER_SOCKET_FD = 1255;
      const CARD64 AHARDWAREBUFFER_FLIPPED_SOCKET_FD = 1256;
 +    const CARD64 AHARDWAREBUFFER_RGBA_SOCKET_FD = 1257;
      const CARD64 RAW_MMAPPABLE_FD = 1274;
      AHardwareBuffer_Desc desc = {0};
++    AHardwareBuffer *received_buffer = NULL;
      PixmapPtr pixmap = NullPixmap;
-@@ -1101,6 +1102,7 @@ static PixmapPtr loriePixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *
+     LoriePixmapPriv *priv = NULL;
  
      check(num_fds > 1, "DRI3: More than 1 fd");
      check(modifier != RAW_MMAPPABLE_FD && modifier != AHARDWAREBUFFER_SOCKET_FD && modifier != AHARDWAREBUFFER_FLIPPED_SOCKET_FD &&
@@ -31,25 +59,60 @@ index 8d22666..70f8fd3 100644
            modifier != DRM_FORMAT_MOD_INVALID && modifier != DRM_FORMAT_MOD_LINEAR, "DRI3: Modifier is not RAW_MMAPPABLE_FD or AHARDWAREBUFFER_SOCKET_FD");
  
      pixmap = screen->CreatePixmap(screen, 0, 0, depth, 0);
-@@ -1119,7 +1121,8 @@ static PixmapPtr loriePixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *
+@@ -1119,26 +1138,37 @@ static PixmapPtr loriePixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *
          return pixmap;
      }
  
 -    if (modifier == AHARDWAREBUFFER_SOCKET_FD || modifier == AHARDWAREBUFFER_FLIPPED_SOCKET_FD) {
+-        AHardwareBuffer* buffer;
 +    if (modifier == AHARDWAREBUFFER_SOCKET_FD || modifier == AHARDWAREBUFFER_FLIPPED_SOCKET_FD ||
 +        modifier == AHARDWAREBUFFER_RGBA_SOCKET_FD) {
-         AHardwareBuffer* buffer;
          struct stat info;
          uint8_t buf = 1;
-@@ -1139,6 +1142,8 @@ static PixmapPtr loriePixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *
+         int r;
++        ssize_t write_result;
+ 
+         priv->flipped = modifier == AHARDWAREBUFFER_FLIPPED_SOCKET_FD;
+         check(fstat(fds[0], &info) != 0, "DRI3: fstat failed: %s", strerror(errno));
+         check(!S_ISSOCK(info.st_mode), "DRI3: modifier is AHARDWAREBUFFER_SOCKET_FD but fd is not a socket");
+         // Sending signal to other end of socket to send buffer.
+-        check(write(fds[0], &buf, 1) != 1, "DRI3: AHARDWAREBUFFER_SOCKET_FD: failed to write to socket: %s", strerror(errno));
+-        check((r = AHardwareBuffer_recvHandleFromUnixSocket(fds[0], &buffer)) != 0,
++        check(!lorieWaitForSocketEvent(fds[0], POLLOUT),
++              "DRI3: AHARDWAREBUFFER_SOCKET_FD: timed out sending acknowledgement");
++        do {
++            write_result = write(fds[0], &buf, 1);
++        } while (write_result < 0 && errno == EINTR);
++        check(write_result != 1, "DRI3: AHARDWAREBUFFER_SOCKET_FD: failed to write to socket: %s", strerror(errno));
++        check(!lorieWaitForSocketEvent(fds[0], POLLIN),
++              "DRI3: AHARDWAREBUFFER_SOCKET_FD: timed out waiting for buffer handle");
++        check((r = AHardwareBuffer_recvHandleFromUnixSocket(fds[0], &received_buffer)) != 0,
+               "DRI3: AHARDWAREBUFFER_SOCKET_FD: failed to obtain AHardwareBuffer from socket: %d", r);
+-        check(!buffer, "DRI3: AHARDWAREBUFFER_SOCKET_FD: did not receive AHardwareSocket from buffer");
+-        AHardwareBuffer_describe(buffer, &desc);
++        check(!received_buffer, "DRI3: AHARDWAREBUFFER_SOCKET_FD: did not receive AHardwareSocket from buffer");
++        AHardwareBuffer_describe(received_buffer, &desc);
+         check(desc.format != AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM
+             && desc.format != AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM
              && desc.format != AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM,
              "DRI3: AHARDWAREBUFFER_SOCKET_FD: wrong format of AHardwareBuffer. Must be one of: AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM, AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM, AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM (stands for 5).");
-         check(!(priv->buffer = LorieBuffer_wrapAHardwareBuffer(buffer)), "DRI3: LorieBuffer_wrapAHardwareBuffer failed.");
+-        check(!(priv->buffer = LorieBuffer_wrapAHardwareBuffer(buffer)), "DRI3: LorieBuffer_wrapAHardwareBuffer failed.");
++        check(!(priv->buffer = LorieBuffer_wrapAHardwareBuffer(received_buffer)), "DRI3: LorieBuffer_wrapAHardwareBuffer failed.");
++        received_buffer = NULL; // Ownership moved to priv->buffer.
 +        if (modifier == AHARDWAREBUFFER_RGBA_SOCKET_FD)
 +            LorieBuffer_setNeedsBgraSwizzle(priv->buffer, false);
  
          screen->ModifyPixmapHeader(pixmap, desc.width, desc.height, 0, 0, desc.stride * 4, NULL);
          if (lorieServerDebugEnabled)
+@@ -1148,6 +1178,8 @@ static PixmapPtr loriePixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *
+     return pixmap;
+ 
+     fail:
++    if (received_buffer)
++        AHardwareBuffer_release(received_buffer);
+     if (pixmap)
+         screen->DestroyPixmap(pixmap);
+ 
 diff --git a/lorie/src/main/cpp/lorie/buffer.c b/lorie/src/main/cpp/lorie/buffer.c
 index 9e2eabd..ad8c96c 100644
 --- a/lorie/src/main/cpp/lorie/buffer.c

@@ -54,3 +54,26 @@ Run ten iterations across all default widths with:
 
 Use `UDROID_AHB_TRANSPORT_ONLY=1` to isolate allocation and socket transport,
 or `UDROID_AHB_SOURCE_ONLY=1` to stop after the producer sends its handle.
+
+## Unix-socket handshake faults
+
+`unix-socket-handshake.c` validates the bounded control-plane behavior used by
+the paired xMeM producer and Termux:X11 importer. It covers a silent peer, a
+closed peer, a delayed valid acknowledgement, and an invalid acknowledgement
+without allocating an AHardwareBuffer or launching X11.
+
+```sh
+cc -O2 -Wall -Wextra unix-socket-handshake.c -o unix-socket-handshake -pthread
+./unix-socket-handshake
+```
+
+`x11-ahb-handshake-fault.c` exercises the actual Termux:X11 DRI3 import path.
+It withholds the AHardwareBuffer after the acknowledgement and requires the
+server to reject that request near the three-second deadline, then answer a
+normal X request in under one second.
+
+```sh
+cc -O2 -Wall -Wextra x11-ahb-handshake-fault.c \
+  -o x11-ahb-handshake-fault -lxcb -lxcb-dri3
+DISPLAY=:0 ./x11-ahb-handshake-fault
+```

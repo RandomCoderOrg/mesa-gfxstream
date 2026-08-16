@@ -8,8 +8,11 @@ surface enumeration through image creation, allocation, and DRI3 transport.
 Create each swapchain image exactly once so deferred allocation keeps the
 application-visible VkImage handle stable. Select memory using the image's real
 requirements, preserve sRGB semantics, initialize cleanup state, and wake the
-Present event thread during teardown. Private DRI3 modifiers 1257 and 1255 tell
-the paired Termux:X11 server whether content is RGBA or BGRA.
+Present event thread during teardown. Bound the private AHardwareBuffer socket
+handshake so a dead or mismatched X server cannot freeze the producer. Accept
+readable final messages that arrive together with POLLHUP. Private DRI3
+modifiers 1257 and 1255 tell the paired Termux:X11 server whether content is
+RGBA or BGRA.
 ---
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 96af204..3149dad 100644
@@ -136,10 +139,25 @@ index b27ea1d..bf8d793 100644
        .window = static_cast<xcb_window_t>(pCreateInfo->window),
     };
 diff --git a/wsi/x11/swapchain.cpp b/wsi/x11/swapchain.cpp
-index 89a6c2f..83b3bc4 100644
+index 89a6c2f..4eddd4c 100644
 --- a/wsi/x11/swapchain.cpp
 +++ b/wsi/x11/swapchain.cpp
-@@ -43,6 +43,15 @@
+@@ -29,6 +29,7 @@
+  */
+ 
+ #include <cassert>
++#include <cerrno>
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstdint>
+@@ -38,11 +39,22 @@
+ 
+ #include <dlfcn.h>
+ #include <fcntl.h>
++#include <poll.h>
+ #include <sys/socket.h>
++#include <sys/time.h>
+ #include <unistd.h>
  #include <util/timed_semaphore.hpp>
  #include <vulkan/vulkan_core.h>
  #include <vulkan/vulkan_android.h>
@@ -155,7 +173,7 @@ index 89a6c2f..83b3bc4 100644
  #include <android/hardware_buffer.h>
  
  #include <xcb/present.h>
-@@ -69,12 +78,12 @@ struct x11_image_data
+@@ -69,17 +81,35 @@ struct x11_image_data
  {
     /* Device memory backing the image. */
     VkDeviceMemory memory{};
@@ -171,7 +189,30 @@ index 89a6c2f..83b3bc4 100644
     std::vector<pending_completion> pending_completions;
  };
  
-@@ -88,6 +97,8 @@ swapchain::swapchain(layer::device_private_data &dev_data, const VkAllocationCal
+ #define X11_SWAPCHAIN_MAX_PENDING_COMPLETIONS 128
+ 
++static constexpr int AHB_HANDSHAKE_TIMEOUT_MS = 3000;
++
++static bool wait_for_socket_event(int fd, short events)
++{
++   pollfd descriptor = { fd, events, 0 };
++   int result;
++   do
++   {
++      result = poll(&descriptor, 1, AHB_HANDSHAKE_TIMEOUT_MS);
++   } while (result < 0 && errno == EINTR);
++
++   /* POLLIN and POLLHUP may arrive together when the peer writes its final
++    * protocol message and closes. Consume the requested event; the following
++    * read/recv validates whether data or only EOF remains. */
++   return result == 1 && (descriptor.revents & events) != 0 &&
++          (descriptor.revents & (POLLERR | POLLNVAL)) == 0;
++}
++
+ swapchain::swapchain(layer::device_private_data &dev_data, const VkAllocationCallbacks *pAllocator, surface *surface)
+    : wsi::swapchain_base(dev_data, pAllocator)
+    , m_connection(surface->get_connection())
+@@ -88,6 +118,8 @@ swapchain::swapchain(layer::device_private_data &dev_data, const VkAllocationCal
     , m_send_sbc(0)
     , m_target_msc(0)
     , m_last_present_msc(0)
@@ -180,7 +221,7 @@ index 89a6c2f..83b3bc4 100644
     , m_thread_status_lock()
     , m_thread_status_cond()
  {
-@@ -100,6 +111,11 @@ swapchain::~swapchain()
+@@ -100,6 +132,11 @@ swapchain::~swapchain()
     if (m_present_event_thread_run)
     {
        m_present_event_thread_run = false;
@@ -192,7 +233,7 @@ index 89a6c2f..83b3bc4 100644
        m_thread_status_cond.notify_all();
        thread_status_lock.unlock();
  
-@@ -119,24 +135,24 @@ swapchain::~swapchain()
+@@ -119,24 +156,24 @@ swapchain::~swapchain()
     teardown();
  }
  
@@ -231,7 +272,25 @@ index 89a6c2f..83b3bc4 100644
  }
  
  xcb_pixmap_t swapchain::create_pixmap(swapchain_image &image)
-@@ -150,7 +166,7 @@ xcb_pixmap_t swapchain::create_pixmap(swapchain_image &image)
+@@ -144,27 +181,65 @@ xcb_pixmap_t swapchain::create_pixmap(swapchain_image &image)
+    auto data = reinterpret_cast<x11_image_data *>(image.data);
+ 
+    int fds[] = { -1, -1 };
+-   if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) < 0)
++   if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) < 0)
++      return 0;
++
++   const timeval socket_timeout = { AHB_HANDSHAKE_TIMEOUT_MS / 1000,
++                                    (AHB_HANDSHAKE_TIMEOUT_MS % 1000) * 1000 };
++   if (setsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &socket_timeout, sizeof(socket_timeout)) != 0 ||
++       setsockopt(fds[0], SOL_SOCKET, SO_SNDTIMEO, &socket_timeout, sizeof(socket_timeout)) != 0)
++   {
++      WSI_LOG_ERROR("Failed to configure AHardwareBuffer socket timeout: %s", strerror(errno));
++      close(fds[0]);
++      close(fds[1]);
+       return 0;
++   }
+ 
     auto pixmap = xcb_generate_id(m_connection);
     auto cookie = xcb_dri3_pixmap_from_buffers_checked(
        m_connection, pixmap, m_window, 1, m_image_create_info.extent.width, m_image_create_info.extent.height,
@@ -239,8 +298,55 @@ index 89a6c2f..83b3bc4 100644
 +      data->layout.rowPitch, data->layout.offset, 0, 0, 0, 0, 0, 0, 24, 32, m_ahb_dri3_modifier, &fds[1]);
     xcb_flush(m_connection);
  
-    uint8_t buf = 0;
-@@ -177,27 +193,20 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
+-   uint8_t buf = 0;
+-   read(fds[0], &buf, 1);
++   bool transport_ok = false;
++   uint8_t ack = 0;
++   if (!wait_for_socket_event(fds[0], POLLIN))
++   {
++      WSI_LOG_ERROR("Timed out waiting for the X11 AHardwareBuffer import acknowledgement");
++   }
++   else
++   {
++      ssize_t read_result;
++      do
++      {
++         read_result = read(fds[0], &ack, sizeof(ack));
++      } while (read_result < 0 && errno == EINTR);
+ 
+-   HardwareBuffer_sendHandleToUnixSocket(data->ahb, fds[0]);
++      if (read_result != sizeof(ack) || ack != 1)
++      {
++         WSI_LOG_ERROR("Invalid X11 AHardwareBuffer import acknowledgement");
++      }
++      else if (!wait_for_socket_event(fds[0], POLLOUT))
++      {
++         WSI_LOG_ERROR("Timed out waiting to send the AHardwareBuffer handle");
++      }
++      else
++      {
++         int send_result = HardwareBuffer_sendHandleToUnixSocket(data->ahb, fds[0]);
++         transport_ok = send_result == 0;
++         if (!transport_ok)
++            WSI_LOG_ERROR("Failed to send the AHardwareBuffer handle: %d", send_result);
++      }
++   }
+ 
+    close(fds[0]);
+ 
+    auto error = xcb_request_check(m_connection, cookie);
+-   if (error)
++   if (error || !transport_ok)
+    {
+-      free(error);
+-      return false;
++      if (error)
++         free(error);
++      return 0;
+    }
+ 
+    data->pixmap = pixmap;
+@@ -177,27 +252,20 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
     VkExternalMemoryHandleTypeFlags handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
     const std::lock_guard<std::recursive_mutex> lock(m_image_status_mutex);
  
@@ -278,7 +384,7 @@ index 89a6c2f..83b3bc4 100644
        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     }
  
-@@ -213,7 +222,7 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
+@@ -213,7 +281,7 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
     VkMemoryAllocateInfo memory_allocate_info = {};
     memory_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     memory_allocate_info.pNext = &export_memory_allocate_info;
@@ -287,7 +393,7 @@ index 89a6c2f..83b3bc4 100644
     memory_allocate_info.memoryTypeIndex = mem_type_idx;
  
     /* Create image_data */
-@@ -281,9 +290,54 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
+@@ -281,9 +349,54 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
  VkResult swapchain::create_swapchain_image(VkImageCreateInfo image_create_info, swapchain_image &image)
  {
     m_image_create_info = image_create_info;
@@ -342,7 +448,7 @@ index 89a6c2f..83b3bc4 100644
  void swapchain::present_event_thread()
  {
     auto thread_status_lock = std::unique_lock<std::mutex>(m_thread_status_lock);
-@@ -564,6 +618,44 @@ VkResult swapchain::init_platform(VkDevice device, const VkSwapchainCreateInfoKH
+@@ -564,6 +677,44 @@ VkResult swapchain::init_platform(VkDevice device, const VkSwapchainCreateInfoKH
        return VK_ERROR_INITIALIZATION_FAILED;
     }
  

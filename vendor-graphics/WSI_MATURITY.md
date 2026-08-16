@@ -28,24 +28,23 @@ flowchart LR
 | Color encoding | Fixed | BGRA sRGB maps to RGBA sRGB instead of silently becoming UNORM |
 | Channel semantics | Fixed | Paired modifiers `1257` and `1255` identify negotiated RGBA and BGRA content |
 | Teardown wake | Fixed | A Present MSC notification wakes the event thread before join |
+| Bounded AHB handshake | Fixed | Producer and server use three-second poll deadlines; withheld-handle fault returned after 3002 ms and X recovered immediately |
 | Direct presentation | Pass | Mali-G72 red frame, clean exit, 1/1 Termux:X11 Present copies GPU-offloaded |
 | Rapid lifecycle soak | Pass | 25/25 image views and swapchains reached clean exit; 25/25 Present copies were GPU-offloaded in an isolated log run |
 
 ## Promotion gates still open
 
-1. Add bounded error handling to the AHardwareBuffer socket handshake so a
-   dead peer cannot block the producer or X server indefinitely.
-2. Carry acquire/release synchronization to X Present with an explicit fence.
+1. Carry acquire/release synchronization to X Present with an explicit fence.
    The current implementation is correct but waits a Vulkan fence on the CPU
    before Present, which can cost compositor latency.
-3. Advertise only presentation modes whose semantics are implemented. MAILBOX
+2. Advertise only presentation modes whose semantics are implemented. MAILBOX
    needs real queued-frame replacement; until then FIFO is the release target.
-4. Correctly handle resize, surface loss, retired swapchains, Present serial
+3. Correctly handle resize, surface loss, retired swapchains, Present serial
    wrap, and X connection teardown under repeated stress.
-5. Remove unnecessary sync-FD extension gates or use sync-FD end to end. The
+4. Remove unnecessary sync-FD extension gates or use sync-FD end to end. The
    X11 backend currently checks external sync-FD support but uses a normal
    Vulkan presentation fence.
-6. Version the paired private transport and reject mismatched WSI/server builds
+5. Version the paired private transport and reject mismatched WSI/server builds
    with a clear diagnostic rather than corrupted output.
 
 ## Qualification sequence
