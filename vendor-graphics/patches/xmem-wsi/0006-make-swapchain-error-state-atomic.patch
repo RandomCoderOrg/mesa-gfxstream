@@ -1,0 +1,54 @@
+From: uDroid graphics runtime
+Subject: [PATCH] WSI: make the cross-thread swapchain error state atomic
+
+Presentation workers publish surface and backend errors while application
+threads read them from acquire and status entry points. Store the shared result
+in an atomic so those reads and writes have defined C++ behavior across the
+X11, Wayland, display, and headless implementations.
+---
+diff --git a/wsi/swapchain_base.hpp b/wsi/swapchain_base.hpp
+--- a/wsi/swapchain_base.hpp
++++ b/wsi/swapchain_base.hpp
+@@ -30,6 +30,7 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <pthread.h>
+ #include <semaphore.h>
+ #include <vulkan/vulkan.h>
+@@ -586,12 +587,12 @@
+     */
+    bool error_has_occured() const
+    {
+-      return m_error_state != VK_SUCCESS;
++      return m_error_state.load() != VK_SUCCESS;
+    }
+ 
+    VkResult get_error_state() const
+    {
+-      return m_error_state;
++      return m_error_state.load();
+    }
+ 
+    /*
+@@ -604,7 +605,7 @@
+     */
+    void set_error_state(VkResult state)
+    {
+-      m_error_state = state;
++      m_error_state.store(state);
+    }
+ 
+    /**
+@@ -623,7 +624,7 @@
+     * appropriate error code and it is returned to the user through the next
+     * acquire_next_image call.
+     */
+-   VkResult m_error_state;
++   std::atomic<VkResult> m_error_state;
+ 
+    /**
+     * @brief Wait for a buffer to become free.
+-- 
+2.50.1

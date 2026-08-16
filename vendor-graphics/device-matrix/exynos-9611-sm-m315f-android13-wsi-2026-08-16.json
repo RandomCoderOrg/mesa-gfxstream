@@ -141,6 +141,17 @@
       "postFixRegressionFrames": 60,
       "postFixRegressionFps": 62.89,
       "postFixRegressionCleanExit": true
+    },
+    "liveSurfaceLoss": {
+      "errorStateSynchronization": "std::atomic<VkResult>",
+      "processes": 50,
+      "passes": 50,
+      "presentsBeforeWindowLoss": 3,
+      "result": "VK_ERROR_SURFACE_LOST_KHR",
+      "cleanExits": 50,
+      "postStressRegressionFrames": 60,
+      "postStressRegressionFps": 58.23,
+      "postStressRegressionCleanExit": true
     }
   },
   "qualification": "negotiated-explicit-acquire-pass",

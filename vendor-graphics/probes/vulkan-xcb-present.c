@@ -60,6 +60,7 @@ int main(int argc, char **argv)
     uint64_t frame_count = 1;
     uint64_t create_destroy_cycles = 0;
     uint64_t resize_after_frames = 0;
+    uint64_t destroy_window_after_frames = 0;
     int destroy_window_before_capabilities = 0;
     for (int index = 1; index < argc; ++index) {
         if (strcmp(argv[index], "--hold-ms") == 0 && index + 1 < argc) {
@@ -94,12 +95,24 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[index],
                           "--destroy-window-before-capabilities") == 0) {
             destroy_window_before_capabilities = 1;
+        } else if (strcmp(argv[index], "--destroy-window-after-frames") == 0 &&
+                   index + 1 < argc) {
+            destroy_window_after_frames =
+                parse_u64(argv[++index], "--destroy-window-after-frames");
+            if (destroy_window_after_frames == 0 ||
+                destroy_window_after_frames > 100000) {
+                fprintf(stderr,
+                        "FAIL stage=arguments option=--destroy-window-after-frames value=%llu\n",
+                        (unsigned long long)destroy_window_after_frames);
+                return 2;
+            }
         } else {
             fprintf(stderr,
                     "usage: %s [--hold-ms MILLISECONDS] [--frames COUNT] "
                     "[--create-destroy-cycles COUNT] "
                     "[--resize-after-frames COUNT] "
-                    "[--destroy-window-before-capabilities]\n",
+                    "[--destroy-window-before-capabilities] "
+                    "[--destroy-window-after-frames COUNT]\n",
                     argv[0]);
             return 2;
         }
@@ -108,6 +121,13 @@ int main(int argc, char **argv)
         fprintf(stderr,
                 "FAIL stage=arguments option=--resize-after-frames value=%llu frames=%llu\n",
                 (unsigned long long)resize_after_frames,
+                (unsigned long long)frame_count);
+        return 2;
+    }
+    if (destroy_window_after_frames > frame_count) {
+        fprintf(stderr,
+                "FAIL stage=arguments option=--destroy-window-after-frames value=%llu frames=%llu\n",
+                (unsigned long long)destroy_window_after_frames,
                 (unsigned long long)frame_count);
         return 2;
     }
@@ -469,6 +489,53 @@ int main(int argc, char **argv)
         };
         CHECK_VK(vkQueuePresentKHR(queue, &present), "queue-present");
         CHECK_VK(vkQueueWaitIdle(queue), "queue-idle");
+
+        if (frame + 1 == destroy_window_after_frames) {
+            xcb_void_cookie_t destroy_cookie =
+                xcb_destroy_window_checked(connection, window);
+            xcb_generic_error_t *destroy_error =
+                xcb_request_check(connection, destroy_cookie);
+            if (destroy_error != NULL) {
+                fprintf(stderr,
+                        "FAIL stage=destroy-live-window xcb_error=%u\n",
+                        destroy_error->error_code);
+                free(destroy_error);
+                return 1;
+            }
+
+            struct timespec event_delivery = {
+                .tv_sec = 0,
+                .tv_nsec = 100000000,
+            };
+            nanosleep(&event_delivery, NULL);
+
+            uint32_t lost_image_index = 0;
+            VkResult lost_result = vkAcquireNextImageKHR(
+                device, swapchain, 3000000000ULL, acquired, VK_NULL_HANDLE,
+                &lost_image_index);
+            if (lost_result != VK_ERROR_SURFACE_LOST_KHR) {
+                fprintf(stderr,
+                        "FAIL stage=live-surface-loss expected=%d actual=%d\n",
+                        VK_ERROR_SURFACE_LOST_KHR, lost_result);
+                return 1;
+            }
+
+            vkDeviceWaitIdle(device);
+            vkDestroySemaphore(device, rendered, NULL);
+            vkDestroySemaphore(device, acquired, NULL);
+            vkDestroyCommandPool(device, pool, NULL);
+            vkDestroyImageView(device, image_view, NULL);
+            free(images);
+            vkDestroySwapchainKHR(device, swapchain, NULL);
+            vkDestroyDevice(device, NULL);
+            vkDestroySurfaceKHR(instance, surface, NULL);
+            vkDestroyInstance(instance, NULL);
+            xcb_disconnect(connection);
+            printf("PASS stage=live-surface-loss frame=%llu result=%d\n",
+                   (unsigned long long)(frame + 1), lost_result);
+            printf("PASS stage=clean-exit\n");
+            return 0;
+        }
 
         if (frame + 1 == resize_after_frames) {
             const uint32_t resized_width = extent.width + 96;

@@ -48,6 +48,7 @@ cc -O2 -Wall -Wextra vulkan-xcb-present.c -o vulkan-xcb-present \
 ./vulkan-xcb-present --create-destroy-cycles 100 --hold-ms 0
 ./vulkan-xcb-present --frames 8 --resize-after-frames 3 --hold-ms 0
 ./vulkan-xcb-present --destroy-window-before-capabilities --hold-ms 0
+./vulkan-xcb-present --frames 4 --destroy-window-after-frames 3 --hold-ms 0
 ```
 
 A passing run must satisfy all of these conditions:
@@ -76,6 +77,11 @@ include `PASS stage=resize-recreate`, later presented frames, and a clean exit.
 creating its Vulkan surface, then requires the next capability query to return
 `VK_ERROR_SURFACE_LOST_KHR`. Success, a fabricated extent, a hang, or an X
 server failure all fail the gate.
+
+`--destroy-window-after-frames` destroys the checked X window while a real
+swapchain and Present worker are active. The next bounded image acquire must
+return `VK_ERROR_SURFACE_LOST_KHR`, and full Vulkan/X teardown must still reach
+`PASS stage=clean-exit`.
 
 ## AHardwareBuffer transport
 

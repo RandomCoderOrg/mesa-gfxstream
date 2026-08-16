@@ -9,7 +9,7 @@ applies cleanly.
 | --- | --- | --- | --- |
 | libhybris | `https://github.com/libhybris/libhybris.git` | `7079712a42ea2754adf747e70c6cc75764c8596e` | `libhybris/0001-complete-locale-and-ui-compatibility.patch` |
 | sysvk | `https://github.com/xMeM/sysvk.git` | `23ecd775ed6fe06bb5ac0063b5f981f70c543c67` | `sysvk/0001-discover-and-validate-explicit-vulkan-hal.patch` |
-| xMeM WSI | `https://github.com/xMeM/vulkan-wsi-layer.git` | `d5624d42d8b2debbd910ad25662a05c751eb38b7` | `xmem-wsi/0001-port-ahb-x11-wsi-to-glibc-and-rgba-semantics.patch`, `xmem-wsi/0002-pass-sync-file-fences-to-x-present.patch`, `xmem-wsi/0003-negotiate-private-x11-buffer-transport.patch`, `xmem-wsi/0004-own-x11-present-thread-lifecycle.patch`, `xmem-wsi/0005-report-lost-x11-surfaces.patch` |
+| xMeM WSI | `https://github.com/xMeM/vulkan-wsi-layer.git` | `d5624d42d8b2debbd910ad25662a05c751eb38b7` | `xmem-wsi/0001-port-ahb-x11-wsi-to-glibc-and-rgba-semantics.patch`, `xmem-wsi/0002-pass-sync-file-fences-to-x-present.patch`, `xmem-wsi/0003-negotiate-private-x11-buffer-transport.patch`, `xmem-wsi/0004-own-x11-present-thread-lifecycle.patch`, `xmem-wsi/0005-report-lost-x11-surfaces.patch`, `xmem-wsi/0006-make-swapchain-error-state-atomic.patch` |
 | Termux:X11 | uDroid's pinned Termux:X11 submodule | recorded by the consuming uDroid revision | `termux-x11/0001-import-rgba-ahardwarebuffer-content-without-swizzle.patch`, `termux-x11/0002-import-linux-sync-file-fences.patch`, `termux-x11/0003-use-realtime-for-timed-mutex-deadline.patch`, `termux-x11/0004-gate-gpu-copy-hot-path-logging.patch`, `termux-x11/0005-advertise-buffer-transport-protocol.patch` |
 
 The xMeM WSI and Termux:X11 patches form one private protocol revision. The X
@@ -40,6 +40,10 @@ unwinds without leaving a worker or XCB registration behind.
 The fifth xMeM patch converts a failed X geometry query into
 `VK_ERROR_SURFACE_LOST_KHR` for both surface-capability entry points. Without
 it, a destroyed window returned success with an undefined current extent.
+
+The sixth xMeM patch makes the base swapchain error result atomic. Presentation
+workers and Vulkan application threads otherwise read and write that state
+concurrently without a common lock, which is undefined behavior in C++.
 
 The third Termux:X11 patch fixes a separate POSIX contract at the renderer/X
 server lock boundary. `pthread_mutex_timedlock()` consumes an absolute
