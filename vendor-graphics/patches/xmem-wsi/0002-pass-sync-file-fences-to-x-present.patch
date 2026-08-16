@@ -1,0 +1,190 @@
+From: uDroid graphics runtime
+Subject: [PATCH] X11 WSI: pass Vulkan sync-file fences to Present
+
+Keep the existing CPU Vulkan-fence wait as the default. When the paired
+Termux:X11 sync-file backend is explicitly enabled, export the submitted
+Vulkan fence as a Linux sync_file, import it as a DRI3 fence, pass it as the
+Present acquire fence, and release the X fence after CompleteNotify. This
+removes the producer-side CPU wait without allowing the display consumer to
+read an unfinished frame.
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3149dad..3926a86 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -260,7 +260,7 @@ if(BUILD_WSI_X11)
+       ${CMAKE_CURRENT_BINARY_DIR})
+ 
+    target_compile_options(wsi_x11 INTERFACE "-DBUILD_WSI_X11=1")
+-   list(APPEND LINK_WSI_LIBS wsi_x11 xcb xcb-present xcb-xfixes xcb-dri3 X11-xcb)
++   list(APPEND LINK_WSI_LIBS wsi_x11 xcb xcb-present xcb-xfixes xcb-dri3 xcb-sync X11-xcb)
+ else()
+    list(APPEND JSON_COMMANDS COMMAND sed -i '/VK_KHR_xcb_surface/d' ${CMAKE_CURRENT_BINARY_DIR}/VkLayer_window_system_integration.json)
+    list(APPEND JSON_COMMANDS COMMAND sed -i '/VK_KHR_xlib_surface/d' ${CMAKE_CURRENT_BINARY_DIR}/VkLayer_window_system_integration.json)
+diff --git a/util/file_descriptor.hpp b/util/file_descriptor.hpp
+index 13a2633..c44cc28 100644
+--- a/util/file_descriptor.hpp
++++ b/util/file_descriptor.hpp
+@@ -74,6 +74,13 @@ public:
+       return fd_handle;
+    }
+ 
++   int release()
++   {
++      int released = fd_handle;
++      fd_handle = -1;
++      return released;
++   }
++
+    bool is_valid() const
+    {
+       return fd_handle >= 0;
+diff --git a/wsi/x11/swapchain.cpp b/wsi/x11/swapchain.cpp
+index 4eddd4c..91ae614 100644
+--- a/wsi/x11/swapchain.cpp
++++ b/wsi/x11/swapchain.cpp
+@@ -35,6 +35,7 @@
+ #include <cstdint>
+ #include <cstdio>
+ #include <cstdlib>
++#include <cstring>
+ #include <ctime>
+ 
+ #include <dlfcn.h>
+@@ -59,6 +60,7 @@
+ 
+ #include <xcb/present.h>
+ #include <xcb/dri3.h>
++#include <xcb/sync.h>
+ #include <xcb/xcb.h>
+ #include <xcb/xproto.h>
+ 
+@@ -75,6 +77,7 @@ struct pending_completion
+ {
+    uint32_t serial;
+    uint64_t present_id;
++   xcb_sync_fence_t wait_fence;
+ };
+ 
+ struct x11_image_data
+@@ -83,7 +86,7 @@ struct x11_image_data
+    VkDeviceMemory memory{};
+    VkSubresourceLayout layout{};
+ 
+-   fence_sync present_fence;
++   sync_fd_fence_sync present_fence;
+ 
+    xcb_pixmap_t pixmap{};
+    AHardwareBuffer *ahb{};
+@@ -120,6 +123,7 @@ swapchain::swapchain(layer::device_private_data &dev_data, const VkAllocationCal
+    , m_last_present_msc(0)
+    , m_ahb_image_format(VK_FORMAT_UNDEFINED)
+    , m_ahb_dri3_modifier(0)
++   , m_explicit_sync_enabled(false)
+    , m_thread_status_lock()
+    , m_thread_status_cond()
+ {
+@@ -313,7 +317,7 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
+    }
+ 
+    /* Initialize presentation fence. */
+-   auto present_fence = fence_sync::create(m_device_data);
++   auto present_fence = sync_fd_fence_sync::create(m_device_data);
+    if (!present_fence.has_value())
+    {
+       destroy_image(image);
+@@ -480,6 +484,8 @@ void swapchain::present_event_thread()
+                if (iter != data->pending_completions.end())
+                {
+                   set_present_id(iter->present_id);
++                  if (iter->wait_fence != XCB_NONE)
++                     xcb_sync_destroy_fence(m_connection, iter->wait_fence);
+                   data->pending_completions.erase(iter);
+                   m_thread_status_cond.notify_all();
+                }
+@@ -514,13 +520,31 @@ void swapchain::present_image(const pending_present_request &pending_present)
+    m_send_sbc++;
+    uint32_t serial = (uint32_t)m_send_sbc;
+    uint32_t options = XCB_PRESENT_OPTION_NONE;
++   xcb_sync_fence_t wait_fence = XCB_NONE;
+ 
+-   auto cookie = xcb_present_pixmap_checked(m_connection, m_window, image_data->pixmap, serial, 0, 0, 0, 0, 0, 0, 0,
+-                                            options, m_target_msc, 0, 0, 0, nullptr);
++   if (m_explicit_sync_enabled)
++   {
++      auto sync_fd = image_data->present_fence.export_sync_fd();
++      if (!sync_fd.has_value())
++      {
++         WSI_LOG_ERROR("Failed to export the Vulkan present fence as a sync file");
++         set_error_state(VK_ERROR_SURFACE_LOST_KHR);
++         set_present_id(pending_present.present_id);
++         return unpresent_image(pending_present.image_index);
++      }
++      if (sync_fd->is_valid())
++      {
++         wait_fence = xcb_generate_id(m_connection);
++         xcb_dri3_fence_from_fd(m_connection, m_window, wait_fence, false, sync_fd->release());
++      }
++   }
++
++   auto cookie = xcb_present_pixmap_checked(m_connection, m_window, image_data->pixmap, serial, 0, 0, 0, 0, 0,
++                                            wait_fence, 0, options, m_target_msc, 0, 0, 0, nullptr);
+    xcb_discard_reply(m_connection, cookie.sequence);
+    xcb_flush(m_connection);
+ 
+-   image_data->pending_completions.push_back({ serial, pending_present.present_id });
++   image_data->pending_completions.push_back({ serial, pending_present.present_id, wait_fence });
+    m_thread_status_cond.notify_all();
+ 
+    if (m_present_mode == VK_PRESENT_MODE_FIFO_KHR)
+@@ -634,6 +658,9 @@ void swapchain::destroy_image(wsi::swapchain_image &image)
+       {
+          xcb_free_pixmap(m_connection, data->pixmap);
+       }
++      for (const auto &pending : data->pending_completions)
++         if (pending.wait_fence != XCB_NONE)
++            xcb_sync_destroy_fence(m_connection, pending.wait_fence);
+       m_allocator.destroy(1, data);
+       image.data = nullptr;
+    }
+@@ -648,6 +675,8 @@ VkResult swapchain::image_set_present_payload(swapchain_image &image, VkQueue qu
+ 
+ VkResult swapchain::image_wait_present(swapchain_image &image, uint64_t timeout)
+ {
++   if (m_explicit_sync_enabled)
++      return VK_SUCCESS;
+    auto data = reinterpret_cast<x11_image_data *>(image.data);
+    return data->present_fence.wait_payload(timeout);
+ }
+@@ -677,6 +706,11 @@ VkResult swapchain::init_platform(VkDevice device, const VkSwapchainCreateInfoKH
+       return VK_ERROR_INITIALIZATION_FAILED;
+    }
+ 
++   const char *explicit_sync = getenv("UDROID_X11_EXPLICIT_SYNC");
++   m_explicit_sync_enabled = explicit_sync != nullptr && strcmp(explicit_sync, "1") == 0;
++   WSI_LOG_INFO("X11 acquire synchronization: %s",
++                m_explicit_sync_enabled ? "sync-file fence" : "CPU Vulkan fence wait");
++
+    VkImageCreateInfo format_probe = {};
+    format_probe.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    format_probe.imageType = VK_IMAGE_TYPE_2D;
+diff --git a/wsi/x11/swapchain.hpp b/wsi/x11/swapchain.hpp
+index 0ac0f38..47becd2 100644
+--- a/wsi/x11/swapchain.hpp
++++ b/wsi/x11/swapchain.hpp
+@@ -48,6 +48,7 @@
+ #include <wsi/swapchain_base.hpp>
+ #include <xcb/xcb.h>
+ #include <xcb/present.h>
++#include <xcb/sync.h>
+ #include <xcb/xproto.h>
+ 
+ namespace wsi
+@@ -174,6 +175,7 @@ private:
+    uint64_t m_last_present_msc;
+    VkFormat m_ahb_image_format;
+    uint64_t m_ahb_dri3_modifier;
++   bool m_explicit_sync_enabled;
+ 
+    xcb_special_event_t *m_special_event;
+    VkPhysicalDeviceMemoryProperties2 m_memory_props;

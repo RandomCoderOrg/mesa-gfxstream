@@ -1,0 +1,161 @@
+diff --git a/miext/sync/misyncshm.c b/miext/sync/misyncshm.c
+index 01f82fc00..85eb26e86 100644
+--- a/miext/sync/misyncshm.c
++++ b/miext/sync/misyncshm.c
+@@ -30,7 +30,11 @@
+ #include "misyncshm.h"
+ #include "misyncfd.h"
+ #include "pixmapstr.h"
++#include "os.h"
++#include <linux/sync_file.h>
++#include <poll.h>
+ #include <sys/mman.h>
++#include <sys/ioctl.h>
+ #include <unistd.h>
+ #include <fcntl.h>
+ #include <X11/xshmfence.h>
+@@ -40,6 +44,8 @@ static DevPrivateKeyRec syncShmFencePrivateKey;
+ typedef struct _SyncShmFencePrivate {
+     struct xshmfence    *fence;
+     int                 fd;
++    Bool                sync_file;
++    Bool                notify_registered;
+ } SyncShmFencePrivateRec, *SyncShmFencePrivatePtr;
+ 
+ #define SYNC_FENCE_PRIV(pFence) \
+@@ -50,7 +56,17 @@ miSyncShmFenceSetTriggered(SyncFence * pFence)
+ {
+     SyncShmFencePrivatePtr      pPriv = SYNC_FENCE_PRIV(pFence);
+ 
+-    if (pPriv->fence)
++    if (pPriv->sync_file) {
++        if (pPriv->notify_registered) {
++            RemoveNotifyFd(pPriv->fd);
++            pPriv->notify_registered = FALSE;
++        }
++        if (pPriv->fd >= 0) {
++            close(pPriv->fd);
++            pPriv->fd = -1;
++        }
++    }
++    else if (pPriv->fence)
+         xshmfence_trigger(pPriv->fence);
+     miSyncFenceSetTriggered(pFence);
+ }
+@@ -60,6 +76,10 @@ miSyncShmFenceReset(SyncFence * pFence)
+ {
+     SyncShmFencePrivatePtr      pPriv = SYNC_FENCE_PRIV(pFence);
+ 
++    /* A sync_file is a one-shot fence. Once signalled, it cannot acquire a
++     * new payload, so resetting it would create a fence that can never fire. */
++    if (pPriv->sync_file)
++        return;
+     if (pPriv->fence)
+         xshmfence_reset(pPriv->fence);
+     miSyncFenceReset(pFence);
+@@ -70,6 +90,18 @@ miSyncShmFenceCheckTriggered(SyncFence * pFence)
+ {
+     SyncShmFencePrivatePtr      pPriv = SYNC_FENCE_PRIV(pFence);
+ 
++    if (pPriv->sync_file) {
++        struct pollfd poll_fd = { .fd = pPriv->fd, .events = POLLIN };
++
++        if (pFence->triggered)
++            return TRUE;
++        if (pPriv->fd >= 0 && poll(&poll_fd, 1, 0) > 0 &&
++            (poll_fd.revents & (POLLIN | POLLERR | POLLHUP))) {
++            miSyncShmFenceSetTriggered(pFence);
++            return TRUE;
++        }
++        return FALSE;
++    }
+     if (pPriv->fence)
+         return xshmfence_query(pPriv->fence);
+     else
+@@ -96,6 +128,25 @@ static const SyncFenceFuncsRec miSyncShmFenceFuncs = {
+     &miSyncShmFenceDeleteTrigger
+ };
+ 
++static void
++miSyncFileFenceNotify(int fd, int xevents, void *data)
++{
++    SyncFence *pFence = data;
++    SyncShmFencePrivatePtr pPriv = SYNC_FENCE_PRIV(pFence);
++
++    if (pPriv->sync_file && pPriv->fd == fd &&
++        (xevents & (X_NOTIFY_READ | X_NOTIFY_ERROR)))
++        miSyncTriggerFence(pFence);
++}
++
++static Bool
++miSyncIsSyncFile(int fd)
++{
++    struct sync_file_info info = { 0 };
++
++    return ioctl(fd, SYNC_IOC_FILE_INFO, &info) == 0;
++}
++
+ static void
+ miSyncShmScreenCreateFence(ScreenPtr pScreen, SyncFence * pFence,
+                         Bool initially_triggered)
+@@ -103,6 +154,9 @@ miSyncShmScreenCreateFence(ScreenPtr pScreen, SyncFence * pFence,
+     SyncShmFencePrivatePtr      pPriv = SYNC_FENCE_PRIV(pFence);
+ 
+     pPriv->fence = NULL;
++    pPriv->fd = -1;
++    pPriv->sync_file = FALSE;
++    pPriv->notify_registered = FALSE;
+     miSyncScreenCreateFence(pScreen, pFence, initially_triggered);
+     pFence->funcs = miSyncShmFenceFuncs;
+ }
+@@ -112,7 +166,13 @@ miSyncShmScreenDestroyFence(ScreenPtr pScreen, SyncFence * pFence)
+ {
+     SyncShmFencePrivatePtr      pPriv = SYNC_FENCE_PRIV(pFence);
+ 
+-    if (pPriv->fence) {
++    if (pPriv->sync_file) {
++        if (pPriv->notify_registered)
++            RemoveNotifyFd(pPriv->fd);
++        if (pPriv->fd >= 0)
++            close(pPriv->fd);
++    }
++    else if (pPriv->fence) {
+         xshmfence_trigger(pPriv->fence);
+         xshmfence_unmap_shm(pPriv->fence);
+         close(pPriv->fd);
+@@ -127,6 +187,25 @@ miSyncShmCreateFenceFromFd(ScreenPtr pScreen, SyncFence *pFence, int fd, Bool in
+ 
+     miSyncInitFence(pScreen, pFence, initially_triggered);
+ 
++    if (miSyncIsSyncFile(fd)) {
++        pPriv->sync_file = TRUE;
++        pPriv->fd = os_move_fd(fd);
++        if (initially_triggered) {
++            close(pPriv->fd);
++            pPriv->fd = -1;
++            miSyncFenceSetTriggered(pFence);
++            return Success;
++        }
++        if (!SetNotifyFd(pPriv->fd, miSyncFileFenceNotify,
++                         X_NOTIFY_READ, pFence)) {
++            close(pPriv->fd);
++            pPriv->fd = -1;
++            return BadAlloc;
++        }
++        pPriv->notify_registered = TRUE;
++        return Success;
++    }
++
+     fd = os_move_fd(fd);
+     pPriv->fence = xshmfence_map_shm(fd);
+     if (pPriv->fence) {
+@@ -143,6 +222,9 @@ miSyncShmGetFenceFd(ScreenPtr pScreen, SyncFence *pFence)
+ {
+     SyncShmFencePrivatePtr      pPriv = SYNC_FENCE_PRIV(pFence);
+ 
++    if (pPriv->sync_file)
++        return pPriv->fd >= 0 ? fcntl(pPriv->fd, F_DUPFD_CLOEXEC, 0) : -1;
++
+     if (!pPriv->fence) {
+         pPriv->fd = xshmfence_alloc_shm();
+         if (pPriv->fd < 0)

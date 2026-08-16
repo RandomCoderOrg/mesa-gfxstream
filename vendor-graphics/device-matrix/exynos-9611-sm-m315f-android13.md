@@ -11,9 +11,13 @@ file.
 | App permissions | Pass | `/dev/mali0` and `/dev/ion` are readable and writable from the uDroid app domain |
 | Vendor Vulkan | Pass | Mali-G72, Vulkan 1.1.213 through the rootless sysvk/libhybris delegate |
 | AHardwareBuffer lifecycle | Pass | 90/90 allocations and imports across odd and aligned widths |
+| Narrow AHB provider transport | Pass | `libnativewindow.so` completed 9/9 allocate/send/receive/release cases; `libandroid.so` aborted while loading unrelated framework dependencies |
 | Vulkan lifecycle | Pass | 50/50 device create/destroy cycles |
 | X11 protocol | Pass | DRI3 1.2 and Present 1.2 |
 | AHB Vulkan XCB Present | Pass | Red frame, clean exit, Termux:X11 reports 1/1 copies GPU-offloaded |
+| Vulkan sync-file import | Pass | Both the xshmfence control and a vendor Vulkan `sync_file` import through DRI3 |
+| Explicit acquire ordering | Pass | 25/25 Presents stayed blocked for 250–252 ms, then completed 16–39 ms after producer release |
+| Current provider CPU readback | Open regression | Transport succeeds, but the full map/readback probe reached a page boundary outside its returned mapping; WSI does not CPU-map these display targets |
 | Mesa Zink | Blocked | Jammy Mesa rejects missing `logicOp`, `fillModeNonSolid`, and `shaderClipDistance` features |
 | Desktop compositor | Not qualified | Requires a matched Zink build after the feature-policy issue is resolved |
 
@@ -34,6 +38,8 @@ and compatibility fallback.
 - Load the vendor driver through the isolated Bionic TLS sidecar. Loading it
   directly into a glibc process corrupts TLS state.
 - Use `libnativewindow.so` for AHardwareBuffer entry points on this build.
+- Keep explicit acquire synchronization paired: enable it only with the
+  matching Termux:X11 sync-file backend, otherwise retain the CPU fence wait.
 - Keep the AHardwareBuffer producer alive until the consumer has completed its
   import and presentation work.
 - Allocate an RGBA-capable physical AHardwareBuffer and carry the guest's RGBA

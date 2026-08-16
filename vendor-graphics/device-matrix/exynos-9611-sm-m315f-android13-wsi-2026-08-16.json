@@ -12,6 +12,7 @@
     "sysvkBase": "23ecd775ed6fe06bb5ac0063b5f981f70c543c67",
     "xmemWsiBase": "d5624d42d8b2debbd910ad25662a05c751eb38b7",
     "transportModifier": 1257,
+    "ahbProvider": "libnativewindow.so",
     "advertisedSwapchainFormat": "VK_FORMAT_R8G8B8A8_UNORM",
     "negotiatedAhbFormat": "VK_FORMAT_R8G8B8A8_UNORM"
   },
@@ -39,8 +40,33 @@
       "x11RecoveryMilliseconds": 0,
       "x11RequestError": 11,
       "serverResponsive": true
+    },
+    "ahbProviderTransport": {
+      "cases": 9,
+      "passes": 9,
+      "failures": 0,
+      "libandroidResult": "abort-during-dependency-load"
+    },
+    "syncFileFenceImport": {
+      "xshmfenceAccepted": true,
+      "vulkanSyncFileExported": true,
+      "vulkanSyncFileAccepted": true
+    },
+    "explicitAcquireSoak": {
+      "cycles": 25,
+      "completedBeforeRelease": 0,
+      "completedAfterRelease": 25,
+      "blockedMilliseconds": {
+        "minimum": 250,
+        "maximum": 252
+      },
+      "releaseToCompleteMilliseconds": {
+        "minimum": 16,
+        "median": 29,
+        "maximum": 39
+      }
     }
   },
-  "qualification": "direct-wsi-pass",
-  "nextGate": "explicit-present-sync"
+  "qualification": "explicit-acquire-pass",
+  "nextGate": "release-sync-and-protocol-version"
 }

@@ -31,19 +31,21 @@ flowchart LR
 | Bounded AHB handshake | Fixed | Producer and server use three-second poll deadlines; withheld-handle fault returned after 3002 ms and X recovered immediately |
 | Direct presentation | Pass | Mali-G72 red frame, clean exit, 1/1 Termux:X11 Present copies GPU-offloaded |
 | Rapid lifecycle soak | Pass | 25/25 image views and swapchains reached clean exit; 25/25 Present copies were GPU-offloaded in an isolated log run |
+| Narrow AHB provider | Pass | `libnativewindow.so` passed 9/9 AHB transport cases on Exynos 9611; `libandroid.so` aborted while loading its framework/crypto dependency graph |
+| Explicit acquire ordering | Pass | 25/25 delayed Vulkan sync-file Presents withheld completion before release and completed 16–39 ms after release |
 
 ## Promotion gates still open
 
-1. Carry acquire/release synchronization to X Present with an explicit fence.
-   The current implementation is correct but waits a Vulkan fence on the CPU
-   before Present, which can cost compositor latency.
-2. Advertise only presentation modes whose semantics are implemented. MAILBOX
+1. Promote the validated explicit acquire fence from an opt-in only after the
+   paired WSI/server protocol is versioned and runtime probing has selected a
+   matching server. The CPU wait remains the mismatch fallback.
+2. Carry the display-consumer release fence back to image reuse. Present
+   Complete and Idle currently provide lifecycle ordering, but the private
+   transport does not yet return an Android release `sync_file` payload.
+3. Advertise only presentation modes whose semantics are implemented. MAILBOX
    needs real queued-frame replacement; until then FIFO is the release target.
-3. Correctly handle resize, surface loss, retired swapchains, Present serial
+4. Correctly handle resize, surface loss, retired swapchains, Present serial
    wrap, and X connection teardown under repeated stress.
-4. Remove unnecessary sync-FD extension gates or use sync-FD end to end. The
-   X11 backend currently checks external sync-FD support but uses a normal
-   Vulkan presentation fence.
 5. Version the paired private transport and reject mismatched WSI/server builds
    with a clear diagnostic rather than corrupted output.
 
@@ -61,8 +63,15 @@ flowchart TD
     F --> G["Matched Mesa and Zink"]
     G --> H["Compositor micro-workloads"]
     H --> I["Desktop and application soak"]
+    I --> J["Native ARM64 game and controller"]
 ```
 
 No later pass erases an earlier failure. Performance results are compared only
 between runs with the same resolution, presentation mode, thermal state, and
 workload definition.
+
+The final application qualification includes a visually demanding native
+ARM64 game at the highest practical graphics settings. It must record frame
+pacing, thermal behavior, the selected GPU path, and Android game-controller
+button, axis, trigger, and hot-plug behavior. This is a post-compositor gate;
+it must not substitute for the smaller deterministic probes above.

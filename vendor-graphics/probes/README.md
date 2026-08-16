@@ -77,3 +77,44 @@ cc -O2 -Wall -Wextra x11-ahb-handshake-fault.c \
   -o x11-ahb-handshake-fault -lxcb -lxcb-dri3
 DISPLAY=:0 ./x11-ahb-handshake-fault
 ```
+
+## X11 fence semantics
+
+`x11-sync-fence-semantics.c` distinguishes the standard DRI3 shared-memory
+fence from the Android/Linux `sync_file` exported by vendor Vulkan. The first
+case is a control: a triggered xshmfence-compatible memfd must import through
+DRI3. The second exports a real `VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT`
+fence and attempts the same import. This probe establishes whether the X
+server can consume an acquire fence without a CPU wait; it does not infer that
+capability merely because DRI3 1.2 is advertised.
+
+```sh
+cc -O2 -Wall -Wextra x11-sync-fence-semantics.c \
+  -o x11-sync-fence-semantics -lvulkan -lxcb -lxcb-dri3 -lxcb-sync
+DISPLAY=:0 ./x11-sync-fence-semantics
+```
+
+Use `--xshm-only` or `--sync-file-only` to isolate a blocking server or driver
+path. The probe has an eight-second internal deadline and exits 124 rather than
+leaving a wedged diagnostic process behind.
+
+An unmodified Xorg DRI3 fence backend normally accepts the xshmfence control
+and rejects the Vulkan sync file because their FD semantics differ. A direct
+explicit-sync path is available only when both imports succeed and a later
+delayed-fence Present test proves that the server actually waits.
+
+`x11-present-sync-file-wait.c` performs that ordering test. It submits a tiny
+pixmap behind a vendor Vulkan fence whose command buffer is blocked on a Vulkan
+event. No Present Complete event may arrive during the first 250 ms. The probe
+then releases the Vulkan event and requires completion within three seconds.
+
+```sh
+cc -O2 -Wall -Wextra x11-present-sync-file-wait.c \
+  -o x11-present-sync-file-wait \
+  -lvulkan -lxcb -lxcb-dri3 -lxcb-present -lxcb-sync
+DISPLAY=:0 ./x11-present-sync-file-wait
+```
+
+Both `completed_early=false` and `completed_after_release=true` are mandatory.
+This catches a server that accepts a sync-file FD but triggers or ignores it
+before the producer has completed rendering.
