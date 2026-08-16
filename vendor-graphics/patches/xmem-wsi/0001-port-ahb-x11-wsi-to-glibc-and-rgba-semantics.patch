@@ -1,18 +1,13 @@
 From: uDroid graphics runtime
-Subject: [PATCH] X11 WSI: support glibc builds and explicit RGBA semantics
+Subject: [PATCH] X11 WSI: make AHB allocation and teardown portable
 
 Make Android headers an explicit build input rather than linking libandroid,
 fix portable C++ initialization/includes, and use an RGBA AHardwareBuffer on
-devices which reject BGRA allocation. Private DRI3 modifier 1257 tells the
+devices which reject BGRA allocation. Select memory using the image's actual
+requirements, preserve sRGB semantics, initialize cleanup state, and wake the
+Present event thread during teardown. Private DRI3 modifier 1257 tells the
 paired Termux:X11 server that the buffer content is already RGBA.
 ---
- CMakeLists.txt                 |  8 +++++++-
- util/custom_allocator.hpp      |  1 +
- wsi/x11/surface_properties.cpp |  2 +-
- wsi/x11/swapchain.cpp          | 15 ++++++++++++++-
- wsi/x11/swapchain.hpp          | 10 +++++++++-
- 5 files changed, 32 insertions(+), 4 deletions(-)
-
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 96af204..3149dad 100644
 --- a/CMakeLists.txt
@@ -70,7 +65,7 @@ index b27ea1d..00c3d6c 100644
        .window = static_cast<xcb_window_t>(pCreateInfo->window),
     };
 diff --git a/wsi/x11/swapchain.cpp b/wsi/x11/swapchain.cpp
-index 89a6c2f..6da46d0 100644
+index 89a6c2f..4a2621e 100644
 --- a/wsi/x11/swapchain.cpp
 +++ b/wsi/x11/swapchain.cpp
 @@ -43,6 +43,15 @@
@@ -89,7 +84,74 @@ index 89a6c2f..6da46d0 100644
  #include <android/hardware_buffer.h>
  
  #include <xcb/present.h>
-@@ -150,7 +159,7 @@ xcb_pixmap_t swapchain::create_pixmap(swapchain_image &image)
+@@ -69,12 +78,12 @@ struct x11_image_data
+ {
+    /* Device memory backing the image. */
+    VkDeviceMemory memory{};
+-   VkSubresourceLayout layout;
++   VkSubresourceLayout layout{};
+ 
+    fence_sync present_fence;
+ 
+-   xcb_pixmap_t pixmap;
+-   AHardwareBuffer *ahb;
++   xcb_pixmap_t pixmap{};
++   AHardwareBuffer *ahb{};
+    std::vector<pending_completion> pending_completions;
+ };
+ 
+@@ -100,6 +109,11 @@ swapchain::~swapchain()
+    if (m_present_event_thread_run)
+    {
+       m_present_event_thread_run = false;
++      /* xcb_wait_for_special_event is not interrupted by the condition
++       * variable. Queue a Present MSC notification so the event thread can
++       * observe shutdown even when there are no more pixmap events. */
++      xcb_present_notify_msc(m_connection, m_window, static_cast<uint32_t>(++m_send_sbc), 0, 0, 0);
++      xcb_flush(m_connection);
+       m_thread_status_cond.notify_all();
+       thread_status_lock.unlock();
+ 
+@@ -119,24 +133,24 @@ swapchain::~swapchain()
+    teardown();
+ }
+ 
+-static uint32_t get_memory_type(VkPhysicalDeviceMemoryProperties2 memory_props, uint32_t req,
+-                                VkMemoryPropertyFlagBits req_prop)
++static uint32_t get_memory_type(const VkPhysicalDeviceMemoryProperties2 &memory_props, uint32_t type_bits,
++                                VkMemoryPropertyFlags required_properties)
+ {
+-   size_t mem_type_idx = 0;
+-   for (; mem_type_idx < 8 * sizeof(req); ++mem_type_idx)
++   const auto &properties = memory_props.memoryProperties;
++   for (uint32_t index = 0; index < properties.memoryTypeCount; ++index)
+    {
+-      if (req & (1u << mem_type_idx) && req_prop & (1u << mem_type_idx))
+-      {
+-         return mem_type_idx;
+-      }
+-
+-      if (req & (1u << mem_type_idx))
+-      {
+-         return mem_type_idx;
+-      }
++      if ((type_bits & (1u << index)) != 0 &&
++          (properties.memoryTypes[index].propertyFlags & required_properties) == required_properties)
++         return index;
+    }
+ 
+-   return -1;
++   /* Device-local memory is a preference for a presentation image, not a
++    * reason to reject an otherwise compatible external allocation. */
++   for (uint32_t index = 0; index < properties.memoryTypeCount; ++index)
++      if ((type_bits & (1u << index)) != 0)
++         return index;
++
++   return UINT32_MAX;
+ }
+ 
+ xcb_pixmap_t swapchain::create_pixmap(swapchain_image &image)
+@@ -150,7 +164,7 @@ xcb_pixmap_t swapchain::create_pixmap(swapchain_image &image)
     auto pixmap = xcb_generate_id(m_connection);
     auto cookie = xcb_dri3_pixmap_from_buffers_checked(
        m_connection, pixmap, m_window, 1, m_image_create_info.extent.width, m_image_create_info.extent.height,
@@ -98,17 +160,51 @@ index 89a6c2f..6da46d0 100644
     xcb_flush(m_connection);
  
     uint8_t buf = 0;
-@@ -179,6 +188,10 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
+@@ -179,7 +193,13 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
  
     m_image_create_info = image_create;
     m_image_create_info.tiling = VK_IMAGE_TILING_LINEAR;
+-   m_image_create_info.format = VK_FORMAT_R8G8B8A8_UNORM;
 +   /* Samsung's vendor Vulkan cannot allocate BGRA AHardwareBuffer images.
 +    * Keep the X11 surface contract BGRA, but back it with the Android-native
 +    * RGBA format; the Termux:X11 import boundary performs the semantic
 +    * channel conversion. */
-    m_image_create_info.format = VK_FORMAT_R8G8B8A8_UNORM;
++   m_image_create_info.format = image_create.format == VK_FORMAT_B8G8R8A8_SRGB
++                                   ? VK_FORMAT_R8G8B8A8_SRGB
++                                   : VK_FORMAT_R8G8B8A8_UNORM;
  
     VkExternalMemoryImageCreateInfo external_memory_image_create_info = {};
+    external_memory_image_create_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+@@ -193,11 +213,17 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
+       return res;
+    }
+ 
+-   /* Find a memory type */
+-   size_t mem_type_idx = get_memory_type(m_memory_props, 0xFFFFFFFF, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+-   if (mem_type_idx < 0)
++   VkMemoryRequirements memory_requirements{};
++   m_device_data.disp.GetImageMemoryRequirements(m_device, image.image, &memory_requirements);
++
++   /* Select only from the memory types the created image actually supports. */
++   uint32_t mem_type_idx = get_memory_type(m_memory_props, memory_requirements.memoryTypeBits,
++                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
++   if (mem_type_idx == UINT32_MAX)
+    {
+       WSI_LOG_ERROR("required memory type not found");
++      m_device_data.disp.DestroyImage(m_device, image.image, get_allocation_callbacks());
++      image.image = VK_NULL_HANDLE;
+       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    }
+ 
+@@ -213,7 +239,7 @@ VkResult swapchain::allocate_and_bind_swapchain_image(VkImageCreateInfo image_cr
+    VkMemoryAllocateInfo memory_allocate_info = {};
+    memory_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    memory_allocate_info.pNext = &export_memory_allocate_info;
+-   memory_allocate_info.allocationSize = 0;
++   memory_allocate_info.allocationSize = memory_requirements.size;
+    memory_allocate_info.memoryTypeIndex = mem_type_idx;
+ 
+    /* Create image_data */
 diff --git a/wsi/x11/swapchain.hpp b/wsi/x11/swapchain.hpp
 index 3bed48d..9745471 100644
 --- a/wsi/x11/swapchain.hpp

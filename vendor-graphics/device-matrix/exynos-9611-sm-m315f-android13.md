@@ -40,3 +40,6 @@ and compatibility fallback.
   channel semantic independently. This device rejects the BGRA AHB request.
 - Do not approve Zink or a compositor merely because the direct Vulkan Present
   probe passes; those are separate qualification stages.
+
+The spec-correct allocation and teardown rerun is recorded in
+`exynos-9611-sm-m315f-android13-wsi-2026-08-16.json`.

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "deviceId": "fc64011805a98886",
+  "date": "2026-08-16",
+  "route": "vendor-vulkan-ahb",
+  "gpu": {
+    "name": "Mali-G72",
+    "vulkanApi": "1.1.213"
+  },
+  "components": {
+    "libhybrisBase": "7079712a42ea2754adf747e70c6cc75764c8596e",
+    "sysvkBase": "23ecd775ed6fe06bb5ac0063b5f981f70c543c67",
+    "xmemWsiBase": "d5624d42d8b2debbd910ad25662a05c751eb38b7",
+    "transportModifier": 1257
+  },
+  "results": {
+    "aarch64Build": "pass",
+    "xcbWindow": "pass",
+    "vulkanInstance": "pass",
+    "vulkanDevice": "pass",
+    "swapchainImages": 4,
+    "presentedColor": "red",
+    "cleanExit": true,
+    "wallTimeSeconds": 6.917,
+    "termuxX11PresentCopies": 1,
+    "termuxX11GpuOffloadedCopies": 1
+  },
+  "qualification": "direct-wsi-pass",
+  "nextGate": "matched-mesa-zink"
+}
