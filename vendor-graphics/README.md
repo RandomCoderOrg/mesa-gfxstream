@@ -43,9 +43,12 @@ The packaged `vendor-graphics/runtime/bin/udroid-gpu-run` wrapper applies the
 matched Mesa/Zink, libhybris, sysvk, and WSI environment to one command. It
 does not edit the guest or replace distribution libraries. Android's normal
 Vulkan HAL lookup remains first; when that lookup is unavailable in a rootless
-guest, the wrapper supplies an explicit fallback only if exactly one readable
-64-bit HAL exists in the standard vendor, ODM, or system hardware directories.
-An ambiguous device is left to normal lookup or an explicit diagnostic choice.
+guest, the wrapper resolves Android's Vulkan, board, and hardware properties,
+then uses a sole readable 64-bit HAL only as the final fallback. An ambiguous
+device fails closed until qualification supplies an explicit module. The same
+selected module is initialized through `HYBRIS_TLS_PRELOAD` before application
+`main()`, while the packaged `libhybris-common.so.1` isolates its Bionic TLS
+from the glibc process.
 
 ## WSI qualification
 
@@ -57,6 +60,7 @@ vendor-graphics/tools/run-wsi-qualification.sh \
   --present-probe /path/to/vulkan-xcb-present \
   --protocol-probe /path/to/x11-buffer-transport-protocol \
   --stats-probe /path/to/x11-present-stats \
+  --thread-probe /path/to/vulkan-thread-lifecycle \
   --profile smoke \
   --output wsi-smoke.json
 ```
@@ -68,3 +72,26 @@ the workload; AHardwareBuffer qualification requires a non-zero attempt delta
 with every attempted copy GPU-offloaded.
 The suite does not select or modify drivers; that boundary lets one probe
 contract compare standard DRM, vendor Vulkan, and future graphics routes.
+
+## Native Termux Zink launcher
+
+`termux/bin/udroid-zink-run` runs one native Termux X11 application with the
+installed Android vendor-Vulkan wrapper and Mesa Zink. It is deliberately
+separate from `runtime/bin/udroid-gpu-run`, which configures the glibc guest
+bridge and WSI layer.
+
+Install and verify it from Termux:
+
+```sh
+install -Dm755 vendor-graphics/termux/bin/udroid-zink-run \
+  "$PREFIX/bin/udroid-zink-run"
+udroid-zink-run --check
+udroid-zink-run -- glxinfo -B
+udroid-zink-run -- glxgears
+```
+
+The launcher checks the selected ICD library, Zink DRI driver, and local X11
+socket before executing the application. `UDROID_VULKAN_ICD=/path/to/icd.json`
+or `--icd FILE` selects a non-default wrapper; `--display :1` selects another
+Termux:X11 display. Application-specific scaling, GL-version overrides, and
+emulator settings remain outside this wrapper.

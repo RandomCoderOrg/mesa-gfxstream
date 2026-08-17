@@ -1,0 +1,140 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -eu
+
+usage()
+{
+    cat >&2 <<'EOF'
+Usage: udroid-zink-run [--display DISPLAY] [--icd FILE] -- COMMAND [ARG...]
+       udroid-zink-run [--display DISPLAY] [--icd FILE] --check
+
+Run one native Termux X11 application with Mesa Zink over the installed Android
+vendor-Vulkan wrapper. UDROID_VULKAN_ICD overrides automatic ICD discovery.
+EOF
+}
+
+display=${DISPLAY:-:0}
+icd=${UDROID_VULKAN_ICD:-}
+check_only=false
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --display)
+            [ "$#" -ge 2 ] || { usage; exit 2; }
+            display=$2
+            shift 2
+            ;;
+        --icd)
+            [ "$#" -ge 2 ] || { usage; exit 2; }
+            icd=$2
+            shift 2
+            ;;
+        --check)
+            check_only=true
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -* )
+            printf 'udroid-zink-run: unknown option: %s\n' "$1" >&2
+            usage
+            exit 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [ "$check_only" = false ] && [ "$#" -eq 0 ]; then
+    usage
+    exit 2
+fi
+
+prefix=${PREFIX:-/data/data/com.termux/files/usr}
+architecture=$(uname -m)
+
+if [ -z "$icd" ]; then
+    for candidate in \
+        "$HOME/.local/opt/udroid-vulkan-wrapper/share/vulkan/icd.d/wrapper_icd.$architecture.json" \
+        "$HOME/.local/opt/udroid-vulkan-wrapper/share/vulkan/icd.d/wrapper_icd.aarch64.json" \
+        "$HOME/.local/opt/tensor-g1-vulkan-wrapper/share/vulkan/icd.d/wrapper_icd.aarch64.json" \
+        "$prefix/share/vulkan/icd.d/udroid_wrapper_icd.aarch64.json" \
+        "$prefix/etc/vulkan/icd.d/udroid_wrapper_icd.aarch64.json"; do
+        if [ -f "$candidate" ]; then
+            icd=$candidate
+            break
+        fi
+    done
+fi
+
+if [ -z "$icd" ] || [ ! -r "$icd" ]; then
+    printf '%s\n' \
+        'udroid-zink-run: no readable uDroid vendor-Vulkan ICD was found' \
+        'Set UDROID_VULKAN_ICD or pass --icd FILE.' >&2
+    exit 3
+fi
+
+library_path=$(
+    sed -n 's/.*"library_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$icd" | head -n 1
+)
+if [ -z "$library_path" ]; then
+    printf 'udroid-zink-run: ICD has no library_path: %s\n' "$icd" >&2
+    exit 3
+fi
+case "$library_path" in
+    /*) icd_library=$library_path ;;
+    *) icd_library=$(dirname -- "$icd")/$library_path ;;
+esac
+if [ ! -r "$icd_library" ]; then
+    printf 'udroid-zink-run: ICD library is not readable: %s\n' "$icd_library" >&2
+    exit 3
+fi
+
+zink_driver=${UDROID_ZINK_DRI:-$prefix/lib/dri/zink_dri.so}
+if [ ! -r "$zink_driver" ]; then
+    printf 'udroid-zink-run: Zink DRI driver is not readable: %s\n' \
+        "$zink_driver" >&2
+    exit 3
+fi
+
+case "$display" in
+    :*)
+        display_number=${display#:}
+        display_number=${display_number%%.*}
+        x11_socket=${TMPDIR:-$prefix/tmp}/.X11-unix/X$display_number
+        if [ ! -S "$x11_socket" ]; then
+            printf 'udroid-zink-run: Termux:X11 socket is not available: %s\n' \
+                "$x11_socket" >&2
+            exit 4
+        fi
+        ;;
+esac
+
+export DISPLAY="$display"
+export VK_DRIVER_FILES="$icd"
+export VK_ICD_FILENAMES="$icd"
+export MESA_LOADER_DRIVER_OVERRIDE=zink
+export GALLIUM_DRIVER=zink
+export LIBGL_KOPPER_DRI2="${LIBGL_KOPPER_DRI2:-1}"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
+
+if [ "$check_only" = true ] || [ "${UDROID_ZINK_TRACE:-0}" = 1 ]; then
+    printf 'DISPLAY=%s\n' "$DISPLAY"
+    printf 'VK_DRIVER_FILES=%s\n' "$VK_DRIVER_FILES"
+    printf 'VULKAN_ICD_LIBRARY=%s\n' "$icd_library"
+    printf 'MESA_LOADER_DRIVER_OVERRIDE=%s\n' "$MESA_LOADER_DRIVER_OVERRIDE"
+    printf 'GALLIUM_DRIVER=%s\n' "$GALLIUM_DRIVER"
+    printf 'LIBGL_KOPPER_DRI2=%s\n' "$LIBGL_KOPPER_DRI2"
+    printf 'ZINK_DRI=%s\n' "$zink_driver"
+fi
+
+[ "$check_only" = true ] && exit 0
+exec "$@"

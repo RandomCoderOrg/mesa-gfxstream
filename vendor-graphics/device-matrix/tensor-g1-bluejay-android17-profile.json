@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "sourceDeviceId": "59d464a46aba1413",
+  "eligibility": {
+    "aarch64Guest": true,
+    "ahardwareBufferApi": true,
+    "vulkanHalDiscovered": true,
+    "abiCompatibleVulkanHalDiscovered": true,
+    "gpuDeviceAccessible": true,
+    "directAllocatorAccessible": false
+  },
+  "selectedRoute": "vendor-vulkan-ahb",
+  "gpuInterface": "mali-kbase",
+  "allocationOrder": [
+    "ahardwarebuffer"
+  ],
+  "vulkanHal": {
+    "mode": "android-default-first",
+    "fallbackCandidates": [
+      "/vendor/lib64/hw/vulkan.mali.so"
+    ]
+  },
+  "requiredRuntimeProbes": [
+    "libhybris-tls-isolation",
+    "ahardwarebuffer-provider",
+    "vulkan-device-lifecycle",
+    "vulkan-xcb-present",
+    "present-offload",
+    "zink-feature-policy"
+  ]
+}

@@ -1,0 +1,217 @@
+{
+  "schema": 1,
+  "deviceId": "59d464a46aba1413",
+  "android": {
+    "manufacturer": "Google",
+    "model": "Pixel 6a",
+    "device": "bluejay",
+    "board": "bluejay",
+    "platform": "gs101",
+    "hardware": "bluejay",
+    "socManufacturer": "Google",
+    "socModel": "Tensor",
+    "release": "17",
+    "sdk": 37,
+    "buildFingerprint": "google/bluejay_beta/bluejay:DEV/CP41.260717.006/15938186:user/release-keys",
+    "vendorFingerprint": "google/bluejay_beta/bluejay:DEV/CP41.260717.006/15938186:user/release-keys",
+    "abiList": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "armeabi"
+    ],
+    "vndkVersion": "",
+    "trebleEnabled": true,
+    "vulkanProperty": "mali",
+    "kernel": "6.1.162-android14-11-g73ed1931f197-ab15605263",
+    "selinux": "Enforcing"
+  },
+  "discovery": {
+    "deviceNodes": [
+      {
+        "path": "/dev/dma_heap/aaudio_capture_heap",
+        "listing": "cr--r--r-- 1 system audio u:object_r:dmabuf_heap_device:s0  248,  11 2026-08-12 19:54 /dev/dma_heap/aaudio_capture_heap"
+      },
+      {
+        "path": "/dev/dma_heap/aaudio_playback_heap",
+        "listing": "cr--r--r-- 1 system audio u:object_r:dmabuf_heap_device:s0  248,  10 2026-08-12 19:54 /dev/dma_heap/aaudio_playback_heap"
+      },
+      {
+        "path": "/dev/dma_heap/mfc_fw-secure",
+        "listing": "crw------- 1 root root u:object_r:dmabuf_heap_device:s0  248,   4 2026-08-12 19:54 /dev/dma_heap/mfc_fw-secure"
+      },
+      {
+        "path": "/dev/dma_heap/sensor_direct_heap",
+        "listing": "cr--r--r-- 1 system graphics u:object_r:sensor_direct_heap_device:s0  248,   9 2026-08-12 19:54 /dev/dma_heap/sensor_direct_heap"
+      },
+      {
+        "path": "/dev/dma_heap/system-uncached",
+        "listing": "cr--r--r-- 1 system system u:object_r:dmabuf_system_heap_device:s0  248,   6 2026-08-12 19:54 /dev/dma_heap/system-uncached"
+      },
+      {
+        "path": "/dev/dma_heap/system",
+        "listing": "cr--r--r-- 1 system system u:object_r:dmabuf_system_heap_device:s0  248,   5 2026-08-12 19:54 /dev/dma_heap/system"
+      },
+      {
+        "path": "/dev/dma_heap/tui-secure",
+        "listing": "cr--r--r-- 1 system graphics u:object_r:dmabuf_heap_device:s0  248,   3 2026-08-12 19:54 /dev/dma_heap/tui-secure"
+      },
+      {
+        "path": "/dev/dma_heap/vframe-secure",
+        "listing": "cr--r--r-- 1 system drmrpc u:object_r:dmabuf_system_secure_heap_device:s0  248,   1 2026-08-12 19:54 /dev/dma_heap/vframe-secure"
+      },
+      {
+        "path": "/dev/dma_heap/video_system-uncached",
+        "listing": "cr--r--r-- 1 system drmrpc u:object_r:dmabuf_heap_device:s0  248,   8 2026-08-12 19:54 /dev/dma_heap/video_system-uncached"
+      },
+      {
+        "path": "/dev/dma_heap/video_system",
+        "listing": "cr--r--r-- 1 system drmrpc u:object_r:dmabuf_heap_device:s0  248,   7 2026-08-12 19:54 /dev/dma_heap/video_system"
+      },
+      {
+        "path": "/dev/dma_heap/vscaler-secure",
+        "listing": "cr--r--r-- 1 system graphics u:object_r:vscaler_heap_device:s0  248,   2 2026-08-12 19:54 /dev/dma_heap/vscaler-secure"
+      },
+      {
+        "path": "/dev/dma_heap/vstream-secure",
+        "listing": "cr--r--r-- 1 system drmrpc u:object_r:dmabuf_system_secure_heap_device:s0  248,   0 2026-08-12 19:54 /dev/dma_heap/vstream-secure"
+      },
+      {
+        "path": "/dev/dri/card0",
+        "listing": "crw-rw-rw- 1 root graphics u:object_r:graphics_device:s0  226,   0 2026-08-12 19:54 /dev/dri/card0"
+      },
+      {
+        "path": "/dev/dri/renderD128",
+        "listing": "crw-rw-rw- 1 root graphics u:object_r:device:s0  226, 128 2026-08-12 19:54 /dev/dri/renderD128"
+      },
+      {
+        "path": "/dev/mali0",
+        "listing": "crw-rw-rw- 1 system system u:object_r:gpu_device:s0  10,  93 2026-08-12 19:54 /dev/mali0"
+      }
+    ],
+    "vulkanHalCandidates": [
+      {
+        "path": "/vendor/lib/hw/vulkan.mali.so",
+        "listing": "-rw-r--r-- 1 root root 2676 2009-01-01 05:30 /vendor/lib/hw/vulkan.mali.so"
+      },
+      {
+        "path": "/vendor/lib64/hw/vulkan.mali.so",
+        "listing": "-rw-r--r-- 1 root root 133576 2009-01-01 05:30 /vendor/lib64/hw/vulkan.mali.so"
+      }
+    ],
+    "androidLibraryCandidates": [
+      {
+        "path": "/system/lib/libandroid.so",
+        "listing": "-rw-r--r-- 1 root root u:object_r:system_lib_file:s0  230840 2009-01-01 05:30 /system/lib/libandroid.so"
+      },
+      {
+        "path": "/system/lib/libnativewindow.so",
+        "listing": "-rw-r--r-- 1 root root u:object_r:system_lib_file:s0  23220 2009-01-01 05:30 /system/lib/libnativewindow.so"
+      },
+      {
+        "path": "/system/lib64/libandroid.so",
+        "listing": "-rw-r--r-- 1 root root u:object_r:system_lib_file:s0  327960 2009-01-01 05:30 /system/lib64/libandroid.so"
+      },
+      {
+        "path": "/system/lib64/libnativewindow.so",
+        "listing": "-rw-r--r-- 1 root root u:object_r:system_lib_file:s0  39608 2009-01-01 05:30 /system/lib64/libnativewindow.so"
+      }
+    ]
+  },
+  "appDomain": {
+    "package": "org.randomcoder.udroid",
+    "probeAvailable": true,
+    "identity": "uid=10565(u0_a565) gid=10565(u0_a565) groups=10565(u0_a565),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),1078(ext_data_rw),1079(ext_obb_rw),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid),3012(readtracefs),50565(all_a565) context=u:r:runas_app:s0:c53,c258,c512,c768",
+    "deviceAccess": [
+      {
+        "path": "/dev/dma_heap/aaudio_capture_heap",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/aaudio_playback_heap",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/mfc_fw-secure",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/sensor_direct_heap",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/system-uncached",
+        "exists": true,
+        "readable": true,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/system",
+        "exists": true,
+        "readable": true,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/tui-secure",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/vframe-secure",
+        "exists": true,
+        "readable": true,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/video_system-uncached",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/video_system",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/vscaler-secure",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dma_heap/vstream-secure",
+        "exists": true,
+        "readable": true,
+        "writable": false
+      },
+      {
+        "path": "/dev/dri/card0",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/dri/renderD128",
+        "exists": true,
+        "readable": false,
+        "writable": false
+      },
+      {
+        "path": "/dev/mali0",
+        "exists": true,
+        "readable": true,
+        "writable": true
+      }
+    ]
+  }
+}
