@@ -70,7 +70,7 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
       ves->bindings[binding].binding = binding;
       ves->bindings[binding].inputRate = elem->instance_divisor ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
 
-      assert(!elem->instance_divisor || zink_screen(pctx->screen)->info.have_EXT_vertex_attribute_divisor);
+      assert(!elem->instance_divisor || zink_screen(pctx->screen)->info.have_vertex_attribute_divisor);
       if (elem->instance_divisor > screen->info.vdiv_props.maxVertexAttribDivisor)
          debug_printf("zink: clamping instance divisor %u to %u\n", elem->instance_divisor, screen->info.vdiv_props.maxVertexAttribDivisor);
       ves->divisor[binding] = MIN2(elem->instance_divisor, screen->info.vdiv_props.maxVertexAttribDivisor);

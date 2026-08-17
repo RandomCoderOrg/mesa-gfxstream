@@ -596,7 +596,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
               screen->info.have_KHR_shader_draw_parameters;
 
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
-      return screen->info.have_EXT_vertex_attribute_divisor;
+      return screen->info.have_vertex_attribute_divisor;
 
    case PIPE_CAP_MAX_VERTEX_STREAMS:
       return screen->info.tf_props.maxTransformFeedbackStreams;

@@ -1,0 +1,144 @@
+diff --git a/src/gallium/drivers/zink/zink_device_info.py b/src/gallium/drivers/zink/zink_device_info.py
+index 86f3c8cf4d0..26b09084c25 100644
+--- a/src/gallium/drivers/zink/zink_device_info.py
++++ b/src/gallium/drivers/zink/zink_device_info.py
+@@ -323,6 +323,8 @@ struct zink_screen;
+ 
+ struct zink_device_info {
+    uint32_t device_version;
++   bool have_KHR_vertex_attribute_divisor;
++   bool have_vertex_attribute_divisor;
+ 
+ %for ext in extensions:
+ <%helpers:guard ext="${ext}">
+@@ -347,6 +349,17 @@ struct zink_device_info {
+    VkPhysicalDeviceMemoryProperties mem_props;
+    VkPhysicalDeviceIDProperties deviceid_props;
+ 
++   /* VK_KHR_vertex_attribute_divisor retains the EXT feature and pipeline
++    * structure ABI, but uses an expanded properties structure.  Keep the
++    * compatibility storage local so Zink can also build against a registry
++    * which predates the KHR extension. */
++   struct {
++      VkStructureType sType;
++      void *pNext;
++      uint32_t maxVertexAttribDivisor;
++      VkBool32 supportsNonZeroFirstInstance;
++   } vdiv_khr_props;
++
+ %for ext in extensions:
+ <%helpers:guard ext="${ext}">
+ %if ext.has_features:
+@@ -358,7 +371,7 @@ struct zink_device_info {
+ </%helpers:guard>
+ %endfor
+ 
+-    const char *extensions[${len(extensions)}];
++    const char *extensions[${len(extensions) + 1}];
+     uint32_t num_extensions;
+ };
+ 
+@@ -394,6 +407,7 @@ bool
+ zink_get_physical_device_info(struct zink_screen *screen) 
+ {
+    struct zink_device_info *info = &screen->info;
++   bool support_KHR_vertex_attribute_divisor = false;
+ %for ext in extensions:
+ <%helpers:guard ext="${ext}">
+    bool support_${ext.name_with_vendor()} = false;
+@@ -418,6 +432,9 @@ zink_get_physical_device_info(struct zink_screen *screen)
+          }
+ 
+          for (uint32_t i = 0; i < num_extensions; ++i) {
++            if (!strcmp(extensions[i].extensionName,
++                        "VK_KHR_vertex_attribute_divisor"))
++               support_KHR_vertex_attribute_divisor = true;
+          %for ext in extensions:
+          <%helpers:guard ext="${ext}">
+             if (!strcmp(extensions[i].extensionName, "${ext.name}")) {
+@@ -470,6 +487,16 @@ zink_get_physical_device_info(struct zink_screen *screen)
+ %endif
+ %endfor
+ 
++      if (support_KHR_vertex_attribute_divisor &&
++          !support_EXT_vertex_attribute_divisor) {
++         /* The KHR feature structure is ABI-identical to the EXT structure,
++          * including its VkStructureType value. */
++         info->vdiv_feats.sType =
++            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT;
++         info->vdiv_feats.pNext = info->feats.pNext;
++         info->feats.pNext = &info->vdiv_feats;
++      }
++
+       screen->vk.GetPhysicalDeviceFeatures2(screen->pdev, &info->feats);
+    } else {
+       screen->vk.GetPhysicalDeviceFeatures(screen->pdev, &info->feats.features);
+@@ -509,6 +536,15 @@ zink_get_physical_device_info(struct zink_screen *screen)
+ %endif
+ %endfor
+ 
++      if (support_KHR_vertex_attribute_divisor &&
++          !support_EXT_vertex_attribute_divisor) {
++         /* VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES
++          * from VK_KHR_vertex_attribute_divisor and Vulkan 1.4. */
++         info->vdiv_khr_props.sType = (VkStructureType)1000525000;
++         info->vdiv_khr_props.pNext = props.pNext;
++         props.pNext = &info->vdiv_khr_props;
++      }
++
+       if (screen->vk_version < VK_MAKE_VERSION(1,2,0) && screen->instance_info.have_KHR_external_memory_capabilities) {
+          info->deviceid_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+          info->deviceid_props.pNext = props.pNext;
+@@ -580,9 +616,26 @@ zink_get_physical_device_info(struct zink_screen *screen)
+         %endfor
+    }
+ 
++   /* Prefer EXT when both spellings are available, otherwise normalize the
++    * modern KHR capability for the Gallium callers which only need the common
++    * vertex-divisor contract. */
++   info->have_KHR_vertex_attribute_divisor =
++      support_KHR_vertex_attribute_divisor &&
++      !info->have_EXT_vertex_attribute_divisor &&
++      info->vdiv_feats.vertexAttributeInstanceRateDivisor;
++   info->have_vertex_attribute_divisor =
++      info->have_EXT_vertex_attribute_divisor ||
++      info->have_KHR_vertex_attribute_divisor;
++   if (info->have_KHR_vertex_attribute_divisor)
++      info->vdiv_props.maxVertexAttribDivisor =
++         info->vdiv_khr_props.maxVertexAttribDivisor;
++
+    // generate extension list
+    num_extensions = 0;
+ 
++   if (info->have_KHR_vertex_attribute_divisor)
++      info->extensions[num_extensions++] = "VK_KHR_vertex_attribute_divisor";
++
+ %for ext in extensions:
+ <%helpers:guard ext="${ext}">
+    if (info->have_${ext.name_with_vendor()}) {
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 842a8682c0f..38255f06a53 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -596,7 +596,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
+               screen->info.have_KHR_shader_draw_parameters;
+ 
+    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
+-      return screen->info.have_EXT_vertex_attribute_divisor;
++      return screen->info.have_vertex_attribute_divisor;
+ 
+    case PIPE_CAP_MAX_VERTEX_STREAMS:
+       return screen->info.tf_props.maxTransformFeedbackStreams;
+diff --git a/src/gallium/drivers/zink/zink_state.c b/src/gallium/drivers/zink/zink_state.c
+index c94f73b44db..071f23c4950 100644
+--- a/src/gallium/drivers/zink/zink_state.c
++++ b/src/gallium/drivers/zink/zink_state.c
+@@ -70,7 +70,7 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
+       ves->bindings[binding].binding = binding;
+       ves->bindings[binding].inputRate = elem->instance_divisor ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+ 
+-      assert(!elem->instance_divisor || zink_screen(pctx->screen)->info.have_EXT_vertex_attribute_divisor);
++      assert(!elem->instance_divisor || zink_screen(pctx->screen)->info.have_vertex_attribute_divisor);
+       if (elem->instance_divisor > screen->info.vdiv_props.maxVertexAttribDivisor)
+          debug_printf("zink: clamping instance divisor %u to %u\n", elem->instance_divisor, screen->info.vdiv_props.maxVertexAttribDivisor);
+       ves->divisor[binding] = MIN2(elem->instance_divisor, screen->info.vdiv_props.maxVertexAttribDivisor);

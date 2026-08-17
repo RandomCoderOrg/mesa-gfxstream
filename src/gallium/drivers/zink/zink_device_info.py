@@ -323,6 +323,8 @@ struct zink_screen;
 
 struct zink_device_info {
    uint32_t device_version;
+   bool have_KHR_vertex_attribute_divisor;
+   bool have_vertex_attribute_divisor;
 
 %for ext in extensions:
 <%helpers:guard ext="${ext}">
@@ -347,6 +349,17 @@ struct zink_device_info {
    VkPhysicalDeviceMemoryProperties mem_props;
    VkPhysicalDeviceIDProperties deviceid_props;
 
+   /* VK_KHR_vertex_attribute_divisor retains the EXT feature and pipeline
+    * structure ABI, but uses an expanded properties structure.  Keep the
+    * compatibility storage local so Zink can also build against a registry
+    * which predates the KHR extension. */
+   struct {
+      VkStructureType sType;
+      void *pNext;
+      uint32_t maxVertexAttribDivisor;
+      VkBool32 supportsNonZeroFirstInstance;
+   } vdiv_khr_props;
+
 %for ext in extensions:
 <%helpers:guard ext="${ext}">
 %if ext.has_features:
@@ -358,7 +371,7 @@ struct zink_device_info {
 </%helpers:guard>
 %endfor
 
-    const char *extensions[${len(extensions)}];
+    const char *extensions[${len(extensions) + 1}];
     uint32_t num_extensions;
 };
 
@@ -394,6 +407,7 @@ bool
 zink_get_physical_device_info(struct zink_screen *screen) 
 {
    struct zink_device_info *info = &screen->info;
+   bool support_KHR_vertex_attribute_divisor = false;
 %for ext in extensions:
 <%helpers:guard ext="${ext}">
    bool support_${ext.name_with_vendor()} = false;
@@ -418,6 +432,9 @@ zink_get_physical_device_info(struct zink_screen *screen)
          }
 
          for (uint32_t i = 0; i < num_extensions; ++i) {
+            if (!strcmp(extensions[i].extensionName,
+                        "VK_KHR_vertex_attribute_divisor"))
+               support_KHR_vertex_attribute_divisor = true;
          %for ext in extensions:
          <%helpers:guard ext="${ext}">
             if (!strcmp(extensions[i].extensionName, "${ext.name}")) {
@@ -470,6 +487,16 @@ zink_get_physical_device_info(struct zink_screen *screen)
 %endif
 %endfor
 
+      if (support_KHR_vertex_attribute_divisor &&
+          !support_EXT_vertex_attribute_divisor) {
+         /* The KHR feature structure is ABI-identical to the EXT structure,
+          * including its VkStructureType value. */
+         info->vdiv_feats.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT;
+         info->vdiv_feats.pNext = info->feats.pNext;
+         info->feats.pNext = &info->vdiv_feats;
+      }
+
       screen->vk.GetPhysicalDeviceFeatures2(screen->pdev, &info->feats);
    } else {
       screen->vk.GetPhysicalDeviceFeatures(screen->pdev, &info->feats.features);
@@ -508,6 +535,15 @@ zink_get_physical_device_info(struct zink_screen *screen)
 </%helpers:guard>
 %endif
 %endfor
+
+      if (support_KHR_vertex_attribute_divisor &&
+          !support_EXT_vertex_attribute_divisor) {
+         /* VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES
+          * from VK_KHR_vertex_attribute_divisor and Vulkan 1.4. */
+         info->vdiv_khr_props.sType = (VkStructureType)1000525000;
+         info->vdiv_khr_props.pNext = props.pNext;
+         props.pNext = &info->vdiv_khr_props;
+      }
 
       if (screen->vk_version < VK_MAKE_VERSION(1,2,0) && screen->instance_info.have_KHR_external_memory_capabilities) {
          info->deviceid_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
@@ -580,8 +616,25 @@ zink_get_physical_device_info(struct zink_screen *screen)
         %endfor
    }
 
+   /* Prefer EXT when both spellings are available, otherwise normalize the
+    * modern KHR capability for the Gallium callers which only need the common
+    * vertex-divisor contract. */
+   info->have_KHR_vertex_attribute_divisor =
+      support_KHR_vertex_attribute_divisor &&
+      !info->have_EXT_vertex_attribute_divisor &&
+      info->vdiv_feats.vertexAttributeInstanceRateDivisor;
+   info->have_vertex_attribute_divisor =
+      info->have_EXT_vertex_attribute_divisor ||
+      info->have_KHR_vertex_attribute_divisor;
+   if (info->have_KHR_vertex_attribute_divisor)
+      info->vdiv_props.maxVertexAttribDivisor =
+         info->vdiv_khr_props.maxVertexAttribDivisor;
+
    // generate extension list
    num_extensions = 0;
+
+   if (info->have_KHR_vertex_attribute_divisor)
+      info->extensions[num_extensions++] = "VK_KHR_vertex_attribute_divisor";
 
 %for ext in extensions:
 <%helpers:guard ext="${ext}">
