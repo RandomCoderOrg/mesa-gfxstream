@@ -1,0 +1,38 @@
+From: uDroid graphics runtime
+Subject: [PATCH] layer: keep filtered extension objects on one line
+
+The build removes disabled extensions with line-oriented sed expressions.
+Keep the two conditionally removed extension objects on one line so filtering
+does not leave nameless JSON objects containing only spec_version and
+entrypoints.
+---
+diff --git a/layer/VkLayer_window_system_integration.json b/layer/VkLayer_window_system_integration.json
+--- a/layer/VkLayer_window_system_integration.json
++++ b/layer/VkLayer_window_system_integration.json
+@@ -39,23 +39,8 @@
+                 ]
+             },
+-            {"name": "VK_KHR_present_id", "spec_version": "1"},
+-            {
+-                "name": "VK_EXT_swapchain_maintenance1",
+-                "spec_version": "1",
+-                "entrypoints": [
+-                    "vkReleaseSwapchainImagesEXT"
+-                ]
+-            },
+-            {
+-                "name": "VK_EXT_present_timing",
+-                "spec_version": "1",
+-                "entrypoints": [
+-                    "vkSetSwapchainPresentTimingQueueSizeEXT",
+-                    "vkGetSwapchainTimingPropertiesEXT",
+-                    "vkGetSwapchainTimeDomainPropertiesEXT",
+-                    "vkGetPastPresentationTimingEXT"
+-                ]
+-            }
++            {"name": "VK_EXT_swapchain_maintenance1", "spec_version": "1", "entrypoints": ["vkReleaseSwapchainImagesEXT"]},
++            {"name": "VK_EXT_present_timing", "spec_version": "1", "entrypoints": ["vkSetSwapchainPresentTimingQueueSizeEXT", "vkGetSwapchainTimingPropertiesEXT", "vkGetSwapchainTimeDomainPropertiesEXT", "vkGetPastPresentationTimingEXT"]},
++            {"name": "VK_KHR_present_id", "spec_version": "1"}
+         ],
+         "disable_environment": {
+             "DISABLE_WSI_LAYER": "1"

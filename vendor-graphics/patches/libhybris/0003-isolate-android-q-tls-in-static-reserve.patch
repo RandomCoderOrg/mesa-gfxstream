@@ -1,0 +1,835 @@
+From: uDroid graphics runtime
+Subject: [PATCH] libhybris: isolate Android Q TLS in a preloaded static reserve
+
+Android vendor libraries use Bionic's thread-pointer-relative TLS relocations.
+Resolving those offsets against glibc corrupts the host thread and made
+multi-threaded compositors slow down or crash.
+
+Reserve 64 KiB of initial-exec glibc TLS in the preloaded bridge and relocate
+Bionic TPREL and TLSDESC references into that block. Finish the embedded
+linker's startup TLS set before Android constructors run, initialize the main
+thread, and interpose host pthread creation so later Linux and Android workers
+receive the same isolated layout.
+
+Keep dynamic TLS resolution inside the Android namespace, repair the shadowed
+allocation and disabled frees in the imported Q implementation, and use the
+Android Q ABI constants instead of the host limits. HYBRIS_TLS_PRELOAD selects
+the first Android library graph that must be loaded before main; launchers must
+set it to their validated vendor root library and preload libhybris-common.
+
+The final eight bytes of the fixed reserve hold the per-thread initialization
+generation. The linker aborts if the Android layout exceeds the remaining
+capacity rather than placing it over glibc TLS.
+---
+diff --git a/hybris/common/Makefile.am b/hybris/common/Makefile.am
+index 9bfc1db..2c76c94 100644
+--- a/hybris/common/Makefile.am
++++ b/hybris/common/Makefile.am
+@@ -28,6 +28,7 @@ endif
+ libhybris_common_la_SOURCES = \
+ 	hooks.c \
+ 	hooks_shm.c \
++	tls_reserve.c \
+ 	strlcpy.c \
+ 	strlcat.c \
+ 	logging.c \
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index 67bbf31..ca74cac 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -22,6 +22,7 @@
+ #include <hybris/common/binding.h>
+ 
+ #include "hooks_shm.h"
++#include "tls_reserve.h"
+ 
+ #include <stdio.h>
+ #include <stdarg.h>
+@@ -102,6 +103,24 @@ static void (*_android_linker_init)(int sdk_version, void* (*get_hooked_symbol)(
+ #endif
+ static void* __hybris_get_hooked_symbol(const char *sym, const char *requester);
+ 
++static void __attribute__((constructor)) hybris_preload_android_tls_root(void)
++{
++    const char *library;
++    void *handle;
++
++    if (getauxval(AT_SECURE))
++        return;
++    library = getenv("HYBRIS_TLS_PRELOAD");
++    if (library == NULL || library[0] == '\0')
++        return;
++
++    handle = android_dlopen(library, RTLD_NOW | RTLD_LOCAL);
++    if (handle == NULL) {
++        fprintf(stderr, "libhybris: TLS preload failed for %s: %s\n",
++                library, android_dlerror());
++    }
++}
++
+ void *(*_android_dlopen)(const char* filename, int flag) = NULL;
+ char *(*_android_dlerror)() = NULL;
+ void *(*_android_dlsym)(void* handle, const char* symbol) = NULL;
+@@ -418,17 +437,43 @@ static pid_t _hybris_hook_gettid(void)
+  *
+  * */
+ 
++struct hybris_pthread_start {
++    void *(*start_routine)(void*);
++    void *arg;
++};
++
++static void *_hybris_pthread_start(void *opaque)
++{
++    struct hybris_pthread_start *start = opaque;
++    void *(*start_routine)(void*) = start->start_routine;
++    void *arg = start->arg;
++    free(start);
++
++    hybris_tls_initialize_current_thread();
++    return start_routine(arg);
++}
++
+ static int _hybris_hook_pthread_create(pthread_t *thread, const pthread_attr_t *__attr,
+                              void *(*start_routine)(void*), void *arg)
+ {
+     pthread_attr_t *realattr = NULL;
++    struct hybris_pthread_start *start;
+ 
+     TRACE_HOOK("thread %p attr %p", thread, __attr);
+ 
+     if (__attr != NULL)
+         realattr = (pthread_attr_t *) *(uintptr_t *) __attr;
+ 
+-    return pthread_create(thread, realattr, start_routine, arg);
++    start = malloc(sizeof(*start));
++    if (start == NULL)
++        return ENOMEM;
++    start->start_routine = start_routine;
++    start->arg = arg;
++
++    int result = pthread_create(thread, realattr, _hybris_pthread_start, start);
++    if (result != 0)
++        free(start);
++    return result;
+ }
+ 
+ static int _hybris_hook_pthread_kill(pthread_t thread, int sig)
+@@ -4017,4 +4062,3 @@ void* hybris_get_exported_namespace(const char* name)
+ {
+     return android_get_exported_namespace(name);
+ }
+-
+diff --git a/hybris/common/q/bionic/libc/bionic/bionic_elf_tls.cpp b/hybris/common/q/bionic/libc/bionic/bionic_elf_tls.cpp
+index b27ec32..902baea 100644
+--- a/hybris/common/q/bionic/libc/bionic/bionic_elf_tls.cpp
++++ b/hybris/common/q/bionic/libc/bionic/bionic_elf_tls.cpp
+@@ -42,6 +42,8 @@
+ #include "private/bionic_tls.h"
+ #include "pthread_internal.h"
+ 
++extern "C" __attribute__((visibility("hidden"))) bionic_tcb* __hybris_get_bionic_tcb();
++
+ 
+ #define __BIONIC_ALIGN(__value, __alignment) (((__value) + (__alignment)-1) & ~((__alignment)-1))
+ #define __predict_true(exp)     __builtin_expect((exp) != 0, 1)
+@@ -288,7 +290,7 @@ static void update_tls_dtv(bionic_tcb* tcb) {
+           static_cast<void*>(static_cast<char*>(dtls_begin) + allocator.get_chunk_size(dtls_begin));
+       modules.on_destruction_cb(dtls_begin, dtls_end);
+     }
+-    //allocator.free(dtv->modules[i]);
++    allocator.free(dtv->modules[i]);
+     dtv->modules[i] = nullptr;
+   }
+ 
+@@ -297,7 +299,7 @@ static void update_tls_dtv(bionic_tcb* tcb) {
+ 
+ __attribute__((noinline)) static void* tls_get_addr_slow_path(const TlsIndex* ti) {
+   TlsModules& modules = __libc_shared_globals()->tls_modules;
+-  bionic_tcb* tcb = __get_bionic_tcb();
++  bionic_tcb* tcb = __hybris_get_bionic_tcb();
+ 
+   // Block signals and lock TlsModules. We may need the allocator, so take
+   // a write lock.
+@@ -312,11 +314,7 @@ __attribute__((noinline)) static void* tls_get_addr_slow_path(const TlsIndex* ti
+   if (mod_ptr == nullptr) {
+     const TlsSegment& segment = modules.module_table[module_idx].segment;
+     mod_ptr = __libc_shared_globals()->tls_allocator.memalign(segment.alignment, segment.size);
+-    void* mod_ptr = nullptr;
+-if (posix_memalign(&mod_ptr, segment.alignment, segment.size) != 0) {
+-    // Handle allocation failure
+-    mod_ptr = nullptr;
+-}
++    CHECK(mod_ptr != nullptr);
+     if (segment.init_size > 0) {
+       memcpy(mod_ptr, segment.init_ptr, segment.init_size);
+     }
+@@ -341,8 +339,8 @@ if (posix_memalign(&mod_ptr, segment.alignment, segment.size) != 0) {
+ // On most targets, this accessor function is __tls_get_addr and
+ // TLS_GET_ADDR_CCONV is unset. 32-bit x86 uses ___tls_get_addr instead and a
+ // regparm() calling convention.
+-extern "C" void* TLS_GET_ADDR(const TlsIndex* ti) TLS_GET_ADDR_CCONV {
+-  TlsDtv* dtv = __get_tcb_dtv(__get_bionic_tcb());
++extern "C" void* __hybris_tls_get_addr(const TlsIndex* ti) {
++  TlsDtv* dtv = __get_tcb_dtv(__hybris_get_bionic_tcb());
+ 
+   // TODO: See if we can use a relaxed memory ordering here instead.
+   size_t generation = atomic_load(&__libc_tls_generation_copy);
+@@ -356,6 +354,10 @@ extern "C" void* TLS_GET_ADDR(const TlsIndex* ti) TLS_GET_ADDR_CCONV {
+   return tls_get_addr_slow_path(ti);
+ }
+ 
++extern "C" void* TLS_GET_ADDR(const TlsIndex* ti) TLS_GET_ADDR_CCONV {
++  return __hybris_tls_get_addr(ti);
++}
++
+ // This function frees:
+ //  - TLS modules referenced by the current DTV.
+ //  - The list of DTV objects associated with the current thread.
+@@ -389,13 +391,13 @@ void __free_dynamic_tls(bionic_tcb* tcb) {
+       modules.on_destruction_cb(dtls_begin, dtls_end);
+     }
+ 
+-    //allocator.free(dtv->modules[i]);
++    allocator.free(dtv->modules[i]);
+   }
+ 
+   // Now free the thread's list of DTVs.
+   while (dtv->generation != kTlsGenerationNone) {
+     TlsDtv* next = dtv->next;
+-    //allocator.free(dtv);
++    allocator.free(dtv);
+     dtv = next;
+   }
+ 
+diff --git a/hybris/common/q/bionic/libc/private/bionic_elf_tls.h b/hybris/common/q/bionic/libc/private/bionic_elf_tls.h
+index 64e844b..1a922f8 100644
+--- a/hybris/common/q/bionic/libc/private/bionic_elf_tls.h
++++ b/hybris/common/q/bionic/libc/private/bionic_elf_tls.h
+@@ -208,6 +208,7 @@ struct TlsIndex {
+ #endif
+ 
+ extern "C" void* TLS_GET_ADDR(const TlsIndex* ti) TLS_GET_ADDR_CCONV;
++extern "C" __LIBC_HIDDEN__ void* __hybris_tls_get_addr(const TlsIndex* ti);
+ 
+ struct bionic_tcb;
+ void __free_dynamic_tls(bionic_tcb* tcb);
+diff --git a/hybris/common/q/bionic/libc/private/bionic_tls.h b/hybris/common/q/bionic/libc/private/bionic_tls.h
+index 048b2c1..d220893 100644
+--- a/hybris/common/q/bionic/libc/private/bionic_tls.h
++++ b/hybris/common/q/bionic/libc/private/bionic_tls.h
+@@ -98,7 +98,11 @@ struct bionic_tcb {
+  * Maximum number of pthread keys allocated.
+  * This includes pthread keys used internally and externally.
+  */
+-#define BIONIC_PTHREAD_KEY_COUNT (BIONIC_PTHREAD_KEY_RESERVED_COUNT + PTHREAD_KEYS_MAX)
++/* Keep the Android Q ABI independent of the host glibc limits.h values. */
++#define BIONIC_PTHREAD_KEYS_MAX 128
++#define BIONIC_NL_TEXTMAX 255
++#define BIONIC_PTHREAD_KEY_COUNT \
++  (BIONIC_PTHREAD_KEY_RESERVED_COUNT + BIONIC_PTHREAD_KEYS_MAX)
+ 
+ class pthread_key_data_t {
+  public:
+@@ -122,8 +126,8 @@ struct bionic_tls {
+   char ptsname_buf[32];
+   char ttyname_buf[64];
+ 
+-  char strerror_buf[NL_TEXTMAX];
+-  char strsignal_buf[NL_TEXTMAX];
++  char strerror_buf[BIONIC_NL_TEXTMAX];
++  char strsignal_buf[BIONIC_NL_TEXTMAX];
+ 
+   group_state_t group;
+   passwd_state_t passwd;
+diff --git a/hybris/common/q/linker.cpp b/hybris/common/q/linker.cpp
+index bb43299..45da9e4 100644
+--- a/hybris/common/q/linker.cpp
++++ b/hybris/common/q/linker.cpp
+@@ -68,6 +68,7 @@
+ #include "linker_relocs.h"
+ #include "linker_reloc_iterators.h"
+ #include "linker_tls.h"
++#include "../tls_reserve.h"
+ #include "linker_utils.h"
+ 
+ #include "private/bionic_call_ifunc_resolver.h"
+@@ -2311,6 +2312,14 @@ void* do_dlopen(const char* name, int flags,
+ 
+   if (si != nullptr) {
+     void* handle = si->to_handle();
++    if (!linker_static_tls_finished()) {
++      /*
++       * Embedded libhybris has no Android executable startup pass. The first
++       * Android library graph is its startup set: finish TLS after relocation
++       * and before any Android constructor can access it.
++       */
++      linker_finalize_static_tls();
++    }
+     LD_LOG(kLogDlopen,
+            "... dlopen calling constructors: realpath=\"%s\", soname=\"%s\", handle=%p",
+            si->get_realpath(), si->get_soname(), handle);
+@@ -2438,7 +2447,7 @@ bool do_dlsym(void* handle,
+           return false;
+         }
+         const TlsIndex ti { tls_module->module_id, sym->st_value };
+-        *symbol = TLS_GET_ADDR(&ti);
++        *symbol = __hybris_tls_get_addr(&ti);
+       } else {
+ #ifdef WANT_ARM_TRACING
+         if (_wrapping_enabled) {
+@@ -2909,7 +2918,8 @@ static bool is_tls_reloc(ElfW(Word) type) {
+ template<typename ElfRelIteratorT>
+ bool soinfo::relocate(const VersionTracker& version_tracker, ElfRelIteratorT&& rel_iterator,
+                       const soinfo_list_t& global_group, const soinfo_list_t& local_group) {
+-  const size_t tls_tp_base = 0/*__libc_shared_globals()->static_tls_layout.offset_thread_pointer()*/;
++  const ElfW(Addr) hybris_tls_tpoff =
++      static_cast<ElfW(Addr)>(hybris_tls_reserve_tp_offset());
+   std::vector<std::pair<TlsDescriptor*, size_t>> deferred_tlsdesc_relocs;
+ 
+   for (size_t idx = 0; rel_iterator.has_next(); ++idx) {
+@@ -3190,7 +3200,7 @@ bool soinfo::relocate(const VersionTracker& version_tracker, ElfRelIteratorT&& r
+             CHECK(lsi->get_tls() != nullptr); // We rejected a missing TLS segment above.
+             const TlsModule& mod = get_tls_module(lsi->get_tls()->module_id);
+             if (mod.static_offset != SIZE_MAX) {
+-              tpoff += mod.static_offset - tls_tp_base;
++              tpoff += hybris_tls_tpoff + mod.static_offset;
+             } else {
+               DL_ERR("TLS symbol \"%s\" in dlopened \"%s\" referenced from \"%s\" using IE access model",
+                      sym_name, lsi->get_realpath(), get_realpath());
+@@ -3254,9 +3264,10 @@ bool soinfo::relocate(const VersionTracker& version_tracker, ElfRelIteratorT&& r
+             const TlsModule& mod = get_tls_module(module_id);
+             if (mod.static_offset != SIZE_MAX) {
+               desc->func = tlsdesc_resolver_static;
+-              desc->arg = mod.static_offset - tls_tp_base + sym_addr + addend;
++              desc->arg = hybris_tls_tpoff + mod.static_offset + sym_addr + addend;
+               TRACE_TYPE(RELO, "RELO TLSDESC %16p <- static (0x%zx - 0x%zx + 0x%zx + 0x%zx) %s\n",
+-                         reinterpret_cast<void*>(reloc), mod.static_offset, tls_tp_base,
++                         reinterpret_cast<void*>(reloc), mod.static_offset,
++                         static_cast<size_t>(-hybris_tls_tpoff),
+                          static_cast<size_t>(sym_addr), static_cast<size_t>(addend), sym_name);
+             } else {
+               TlsDynamicResolverArg arg;
+diff --git a/hybris/common/q/linker_main.cpp b/hybris/common/q/linker_main.cpp
+index a78ffbf..42824b1 100644
+--- a/hybris/common/q/linker_main.cpp
++++ b/hybris/common/q/linker_main.cpp
+@@ -833,4 +833,5 @@ extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(
+ 
+   init_default_namespaces(get_executable_path());
+   DEBUG("init_default_namespaces %d\n", sdk_version);
++  linker_prepare_embedded_static_tls();
+ }
+diff --git a/hybris/common/q/linker_tls.cpp b/hybris/common/q/linker_tls.cpp
+index a014bbb..f7ce864 100644
+--- a/hybris/common/q/linker_tls.cpp
++++ b/hybris/common/q/linker_tls.cpp
+@@ -27,7 +27,12 @@
+  */
+ 
+ #include "linker_tls.h"
++#include "../tls_reserve.h"
+ 
++#include <pthread.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
+ #include <vector>
+ 
+ #include <android/versioning.h>
+@@ -37,6 +42,7 @@
+ #include "private/bionic_defs.h"
+ #include "private/bionic_elf_tls.h"
+ #include "private/bionic_globals.h"
++#include "bionic/libc/bionic/pthread_internal.h"
+ #include "private/linker_native_bridge.h"
+ #include "linker_main.h"
+ #include "linker_soinfo.h"
+@@ -45,8 +51,95 @@
+ __LIBC_HIDDEN__ _Atomic(size_t) __libc_tls_generation_copy = {SIZE_MAX};
+ 
+ static bool g_static_tls_finished;
++static bool g_static_tls_started;
+ static std::vector<TlsModule> g_tls_modules;
+ 
++struct HybrisTlsThreadState {
++  void* static_tls;
++  TlsDtv* bootstrap_dtv;
++  bionic_tcb* tcb;
++};
++
++static pthread_key_t g_hybris_tls_key;
++static pthread_once_t g_hybris_tls_key_once = PTHREAD_ONCE_INIT;
++
++static void destroy_hybris_tls_state(void* opaque) {
++  HybrisTlsThreadState* state = static_cast<HybrisTlsThreadState*>(opaque);
++  if (state == nullptr) {
++    return;
++  }
++
++  if (state->tcb != nullptr && state->tcb->tls_slot(TLS_SLOT_DTV) != nullptr) {
++    __free_dynamic_tls(state->tcb);
++  }
++  free(state->bootstrap_dtv);
++  free(state);
++}
++
++static void make_hybris_tls_key() {
++  if (pthread_key_create(&g_hybris_tls_key, destroy_hybris_tls_state) != 0) {
++    abort();
++  }
++}
++
++static HybrisTlsThreadState* get_hybris_tls_state() {
++  if (!g_static_tls_finished) {
++    abort();
++  }
++
++  if (pthread_once(&g_hybris_tls_key_once, make_hybris_tls_key) != 0) {
++    abort();
++  }
++
++  HybrisTlsThreadState* state =
++      static_cast<HybrisTlsThreadState*>(pthread_getspecific(g_hybris_tls_key));
++  if (state != nullptr) {
++    return state;
++  }
++
++  state = static_cast<HybrisTlsThreadState*>(calloc(1, sizeof(*state)));
++  if (state == nullptr) {
++    abort();
++  }
++
++  const StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
++  state->static_tls = hybris_tls_reserve_current();
++  memset(state->static_tls, 0, layout.size());
++
++  state->bootstrap_dtv = static_cast<TlsDtv*>(calloc(1, sizeof(TlsDtv)));
++  if (state->bootstrap_dtv == nullptr) {
++    destroy_hybris_tls_state(state);
++    abort();
++  }
++
++  __init_static_tls(state->static_tls);
++  state->tcb = reinterpret_cast<bionic_tcb*>(
++      static_cast<char*>(state->static_tls) + layout.offset_bionic_tcb());
++  __set_tcb_dtv(state->tcb, state->bootstrap_dtv);
++  if (layout.offset_bionic_tls() != SIZE_MAX) {
++    state->tcb->tls_slot(TLS_SLOT_BIONIC_TLS) =
++        static_cast<char*>(state->static_tls) + layout.offset_bionic_tls();
++  }
++
++  if (pthread_setspecific(g_hybris_tls_key, state) != 0) {
++    destroy_hybris_tls_state(state);
++    abort();
++  }
++  return state;
++}
++
++extern "C" bionic_tcb* __hybris_get_bionic_tcb() {
++  return get_hybris_tls_state()->tcb;
++}
++
++extern "C" void __hybris_tls_initialize_current_thread() {
++  get_hybris_tls_state();
++}
++
++extern "C" void* __hybris_tls_resolve_dynamic(const TlsDynamicResolverArg* arg) {
++  return __hybris_tls_get_addr(&arg->index);
++}
++
+ static size_t get_unused_module_index() {
+   for (size_t i = 0; i < g_tls_modules.size(); ++i) {
+     if (g_tls_modules[i].soinfo_ptr == nullptr) {
+@@ -108,6 +201,10 @@ extern "C" void __linker_reserve_bionic_tls_in_static_tls() {
+ }
+ 
+ void linker_setup_exe_static_tls(const char* progname) {
++  if (g_static_tls_started) {
++    return;
++  }
++  g_static_tls_started = true;
+   soinfo* somain = solist_get_somain();
+   StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
+   if (somain->get_tls() == nullptr) {
+@@ -126,9 +223,37 @@ void linker_setup_exe_static_tls(const char* progname) {
+   __linker_reserve_bionic_tls_in_static_tls();
+ }
+ 
++void linker_prepare_embedded_static_tls() {
++  if (g_static_tls_started) {
++    return;
++  }
++  g_static_tls_started = true;
++
++  StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
++  layout.reserve_exe_segment_and_tcb(nullptr, "libhybris");
++  __linker_reserve_bionic_tls_in_static_tls();
++}
++
+ void linker_finalize_static_tls() {
++  if (g_static_tls_finished) {
++    return;
++  }
++  if (!g_static_tls_started) {
++    linker_prepare_embedded_static_tls();
++  }
+   g_static_tls_finished = true;
+-  __libc_shared_globals()->static_tls_layout.finish_layout();
++  StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
++  layout.finish_layout();
++  if (layout.size() > hybris_tls_reserve_capacity()) {
++    async_safe_fatal("Android static TLS requires %zu bytes, but libhybris reserved only %zu bytes",
++                     layout.size(), hybris_tls_reserve_capacity());
++  }
++  hybris_tls_set_initializer(__hybris_tls_initialize_current_thread);
++  hybris_tls_initialize_current_thread();
++}
++
++bool linker_static_tls_finished() {
++  return g_static_tls_finished;
+ }
+ 
+ void register_soinfo_tls(soinfo* si) {
+diff --git a/hybris/common/q/linker_tls.h b/hybris/common/q/linker_tls.h
+index 5a20a64..c8510e1 100644
+--- a/hybris/common/q/linker_tls.h
++++ b/hybris/common/q/linker_tls.h
+@@ -36,7 +36,9 @@ struct TlsModule;
+ struct soinfo;
+ 
+ void linker_setup_exe_static_tls(const char* progname);
++void linker_prepare_embedded_static_tls();
+ void linker_finalize_static_tls();
++bool linker_static_tls_finished();
+ 
+ void register_soinfo_tls(soinfo* si);
+ void unregister_soinfo_tls(soinfo* si);
+@@ -60,6 +62,12 @@ struct TlsDynamicResolverArg {
+   TlsIndex index;
+ };
+ 
++struct bionic_tcb;
++extern "C" __attribute__((visibility("hidden"))) bionic_tcb* __hybris_get_bionic_tcb();
++extern "C" __attribute__((visibility("hidden"))) void __hybris_tls_initialize_current_thread();
++extern "C" __attribute__((visibility("hidden"))) void* __hybris_tls_resolve_dynamic(
++    const TlsDynamicResolverArg* arg);
++
+ extern "C" size_t tlsdesc_resolver_static(size_t);
+ extern "C" size_t tlsdesc_resolver_dynamic(size_t);
+ extern "C" size_t tlsdesc_resolver_unresolved_weak(size_t);
+diff --git a/hybris/common/q/tlsdesc_resolver.S b/hybris/common/q/tlsdesc_resolver.S
+index ad155e2..16cfee8 100644
+--- a/hybris/common/q/tlsdesc_resolver.S
++++ b/hybris/common/q/tlsdesc_resolver.S
+@@ -34,59 +34,6 @@
+ // These resolver functions must preserve every register except x0. They set x0
+ // to the offset of the TLS symbol relative to the thread pointer.
+ 
+-ENTRY_PRIVATE(tlsdesc_resolver_static)
+-  ldr x0, [x0, #8]
+-  ret
+-END(tlsdesc_resolver_static)
+-
+-ENTRY_PRIVATE(tlsdesc_resolver_dynamic)
+-  stp x19, x20, [sp, #-32]!
+-  .cfi_def_cfa_offset 32
+-  .cfi_rel_offset x19, 0
+-  .cfi_rel_offset x20, 8
+-  stp x21, x22, [sp, #16]
+-  .cfi_rel_offset x21, 16
+-  .cfi_rel_offset x22, 24
+-
+-  mrs x19, tpidr_el0            // __get_tls()
+-  ldr x20, [x19, #(TLS_SLOT_DTV * 8)]
+-  ldr x21, [x20]                // TlsDtv::generation
+-
+-  ldr x0, [x0, #8]              // TlsDynamicResolverArg*
+-  ldr x22, [x0]                 // TlsDynamicResolverArg::generation
+-
+-  cmp x21, x22
+-  b.lo .fallback
+-
+-  ldr x21, [x0, #8]             // TlsIndex::module_id
+-  ldr x22, [x0, #16]            // TlsIndex::offset
+-  ldr x21, [x20, x21, lsl #3]   // TlsDtv::modules[module_id]
+-  cbz x21, .fallback
+-  add x0, x21, x22
+-  sub x0, x0, x19
+-
+-  ldp x21, x22, [sp, #16]
+-  .cfi_remember_state
+-  .cfi_restore x21
+-  .cfi_restore x22
+-  ldp x19, x20, [sp], #32
+-  .cfi_adjust_cfa_offset -32
+-  .cfi_restore x19
+-  .cfi_restore x20
+-  ret
+-
+-.fallback:
+-  .cfi_restore_state
+-  ldp x21, x22, [sp, #16]
+-  .cfi_restore x21
+-  .cfi_restore x22
+-  ldp x19, x20, [sp], #32
+-  .cfi_adjust_cfa_offset -32
+-  .cfi_restore x19
+-  .cfi_restore x20
+-  b tlsdesc_resolver_dynamic_slow_path
+-END(tlsdesc_resolver_dynamic)
+-
+ #define SAVE_REG(x, slot)                 \
+     str x, [sp, #((slot) * 8)];           \
+     .cfi_rel_offset x, (slot) * 8;        \
+@@ -110,17 +57,11 @@ END(tlsdesc_resolver_dynamic)
+     .cfi_restore x;                       \
+     .cfi_restore y;                       \
+ 
+-// On entry, x0 is the address of a TlsDynamicResolverArg object rather than
+-// the TlsDescriptor address passed to the original resolver function.
+-ENTRY_PRIVATE(tlsdesc_resolver_dynamic_slow_path)
++.macro SAVE_TLS_DESC_STATE
+   sub sp, sp, #(8 * 84)
+   .cfi_def_cfa_offset (8 * 84)
+   SAVE_GPR_PAIR(x29, x30, 0)
+   mov x29, sp
+-
+-  // Avoid leaking the contents of the shadow call stack register (x18) into
+-  // memory. x19 through x29 are callee-save registers, so we do not need to
+-  // save them.
+   SAVE_GPR_PAIR(x1,  x2,  2)
+   SAVE_GPR_PAIR(x3,  x4,  4)
+   SAVE_GPR_PAIR(x5,  x6,  6)
+@@ -130,7 +71,6 @@ ENTRY_PRIVATE(tlsdesc_resolver_dynamic_slow_path)
+   SAVE_GPR_PAIR(x13, x14, 14)
+   SAVE_GPR_PAIR(x15, x16, 16)
+   SAVE_REG(x17, 18)
+-
+   SAVE_VEC_PAIR(q0,  q1,  20)
+   SAVE_VEC_PAIR(q2,  q3,  24)
+   SAVE_VEC_PAIR(q4,  q5,  28)
+@@ -147,12 +87,9 @@ ENTRY_PRIVATE(tlsdesc_resolver_dynamic_slow_path)
+   SAVE_VEC_PAIR(q26, q27, 72)
+   SAVE_VEC_PAIR(q28, q29, 76)
+   SAVE_VEC_PAIR(q30, q31, 80)
++.endm
+ 
+-  add x0, x0, #8
+-  bl __tls_get_addr
+-  mrs x1, tpidr_el0 // __get_tls()
+-  sub x0, x0, x1
+-
++.macro RESTORE_TLS_DESC_STATE
+   RESTORE_REG_PAIR(q30, q31, 80)
+   RESTORE_REG_PAIR(q28, q29, 76)
+   RESTORE_REG_PAIR(q26, q27, 72)
+@@ -164,27 +101,39 @@ ENTRY_PRIVATE(tlsdesc_resolver_dynamic_slow_path)
+   RESTORE_REG_PAIR(q14, q15, 48)
+   RESTORE_REG_PAIR(q12, q13, 44)
+   RESTORE_REG_PAIR(q10, q11, 40)
+-  RESTORE_REG_PAIR(q8,  q9,  36)
+-  RESTORE_REG_PAIR(q6,  q7,  32)
+-  RESTORE_REG_PAIR(q4,  q5,  28)
+-  RESTORE_REG_PAIR(q2,  q3,  24)
+-  RESTORE_REG_PAIR(q0,  q1,  20)
+-
++  RESTORE_REG_PAIR(q8, q9, 36)
++  RESTORE_REG_PAIR(q6, q7, 32)
++  RESTORE_REG_PAIR(q4, q5, 28)
++  RESTORE_REG_PAIR(q2, q3, 24)
++  RESTORE_REG_PAIR(q0, q1, 20)
+   RESTORE_REG(x17, 18)
+   RESTORE_REG_PAIR(x15, x16, 16)
+   RESTORE_REG_PAIR(x13, x14, 14)
+   RESTORE_REG_PAIR(x11, x12, 12)
+-  RESTORE_REG_PAIR(x9,  x10, 10)
+-  RESTORE_REG_PAIR(x7,  x8,  8)
+-  RESTORE_REG_PAIR(x5,  x6,  6)
+-  RESTORE_REG_PAIR(x3,  x4,  4)
+-  RESTORE_REG_PAIR(x1,  x2,  2)
+-
++  RESTORE_REG_PAIR(x9, x10, 10)
++  RESTORE_REG_PAIR(x7, x8, 8)
++  RESTORE_REG_PAIR(x5, x6, 6)
++  RESTORE_REG_PAIR(x3, x4, 4)
++  RESTORE_REG_PAIR(x1, x2, 2)
+   RESTORE_REG_PAIR(x29, x30, 0)
+   add sp, sp, #(8 * 84)
+   .cfi_def_cfa_offset 0
++.endm
++
++ENTRY_PRIVATE(tlsdesc_resolver_static)
++  ldr x0, [x0, #8]
++  ret
++END(tlsdesc_resolver_static)
++
++ENTRY_PRIVATE(tlsdesc_resolver_dynamic)
++  SAVE_TLS_DESC_STATE
++  ldr x0, [x0, #8]
++  bl __hybris_tls_resolve_dynamic
++  mrs x1, tpidr_el0
++  sub x0, x0, x1
++  RESTORE_TLS_DESC_STATE
+   ret
+-END(tlsdesc_resolver_dynamic_slow_path)
++END(tlsdesc_resolver_dynamic)
+ 
+ // The address of an unresolved weak TLS symbol evaluates to NULL with TLSDESC.
+ // The value returned by this function is added to the thread pointer, so return
+diff --git a/hybris/common/tls_reserve.c b/hybris/common/tls_reserve.c
+new file mode 100644
+index 0000000..016fb41
+--- /dev/null
++++ b/hybris/common/tls_reserve.c
+@@ -0,0 +1,120 @@
++#define _GNU_SOURCE
++
++#include "tls_reserve.h"
++
++#include <dlfcn.h>
++#include <errno.h>
++#include <pthread.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdlib.h>
++
++#define HYBRIS_TLS_RESERVE_CAPACITY (64U * 1024U)
++#define HYBRIS_TLS_METADATA_SIZE sizeof(uint64_t)
++
++static __thread unsigned char g_hybris_tls_reserve[HYBRIS_TLS_RESERVE_CAPACITY]
++    __attribute__((aligned(4096), tls_model("initial-exec")));
++static hybris_tls_initializer_t g_hybris_tls_initializer;
++static uint64_t g_hybris_tls_generation;
++
++static uint64_t* initialized_generation_slot(void) {
++  return (uint64_t*)(g_hybris_tls_reserve + HYBRIS_TLS_RESERVE_CAPACITY -
++                     HYBRIS_TLS_METADATA_SIZE);
++}
++
++void* hybris_tls_reserve_current(void) {
++  return g_hybris_tls_reserve;
++}
++
++size_t hybris_tls_reserve_capacity(void) {
++  return sizeof(g_hybris_tls_reserve) - HYBRIS_TLS_METADATA_SIZE;
++}
++
++intptr_t hybris_tls_reserve_tp_offset(void) {
++  void* thread_pointer;
++  __asm__("mrs %0, tpidr_el0" : "=r"(thread_pointer));
++  return (char*)g_hybris_tls_reserve - (char*)thread_pointer;
++}
++
++void hybris_tls_set_initializer(hybris_tls_initializer_t initializer) {
++  __atomic_store_n(&g_hybris_tls_initializer, initializer, __ATOMIC_RELEASE);
++  __atomic_add_fetch(&g_hybris_tls_generation, 1, __ATOMIC_RELEASE);
++}
++
++void hybris_tls_initialize_current_thread(void) {
++  const uint64_t generation =
++      __atomic_load_n(&g_hybris_tls_generation, __ATOMIC_ACQUIRE);
++  hybris_tls_initializer_t initializer =
++      __atomic_load_n(&g_hybris_tls_initializer, __ATOMIC_ACQUIRE);
++  uint64_t* initialized_generation = initialized_generation_slot();
++  if (initializer == NULL || *initialized_generation == generation)
++    return;
++
++  /* Prevent recursion while the linker installs this thread's Bionic state. */
++  *initialized_generation = generation;
++  initializer();
++}
++
++int hybris_tls_current_thread_initialized(void) {
++  const uint64_t generation =
++      __atomic_load_n(&g_hybris_tls_generation, __ATOMIC_ACQUIRE);
++  return generation != 0 &&
++         *initialized_generation_slot() == generation;
++}
++
++struct hybris_host_pthread_start {
++  void *(*start_routine)(void *);
++  void *arg;
++};
++
++typedef int (*host_pthread_create_t)(pthread_t *, const pthread_attr_t *,
++                                     void *(*)(void *), void *);
++
++static host_pthread_create_t get_host_pthread_create(void) {
++  static host_pthread_create_t function;
++  host_pthread_create_t resolved =
++      __atomic_load_n(&function, __ATOMIC_ACQUIRE);
++  if (resolved != NULL)
++    return resolved;
++
++  resolved = (host_pthread_create_t)dlsym(RTLD_NEXT, "pthread_create");
++  if (resolved != NULL)
++    __atomic_store_n(&function, resolved, __ATOMIC_RELEASE);
++  return resolved;
++}
++
++static void *hybris_host_pthread_start(void *opaque) {
++  struct hybris_host_pthread_start *start = opaque;
++  void *(*start_routine)(void *) = start->start_routine;
++  void *arg = start->arg;
++  free(start);
++
++  hybris_tls_initialize_current_thread();
++  return start_routine(arg);
++}
++
++/*
++ * libhybris-common is intentionally preloaded by isolated-TLS launchers. Keep
++ * Linux-created worker threads on the same Android TLS contract as the main
++ * thread and threads created by Android libraries.
++ */
++int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
++                   void *(*start_routine)(void *), void *arg) {
++  host_pthread_create_t real_pthread_create = get_host_pthread_create();
++  struct hybris_host_pthread_start *start;
++  int result;
++
++  if (real_pthread_create == NULL)
++    return ENOSYS;
++
++  start = malloc(sizeof(*start));
++  if (start == NULL)
++    return ENOMEM;
++  start->start_routine = start_routine;
++  start->arg = arg;
++
++  result = real_pthread_create(thread, attr, hybris_host_pthread_start, start);
++  if (result != 0)
++    free(start);
++  return result;
++}
+diff --git a/hybris/common/tls_reserve.h b/hybris/common/tls_reserve.h
+new file mode 100644
+index 0000000..fabecd6
+--- /dev/null
++++ b/hybris/common/tls_reserve.h
+@@ -0,0 +1,21 @@
++#pragma once
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef void (*hybris_tls_initializer_t)(void);
++
++void* hybris_tls_reserve_current(void);
++size_t hybris_tls_reserve_capacity(void);
++intptr_t hybris_tls_reserve_tp_offset(void);
++void hybris_tls_set_initializer(hybris_tls_initializer_t initializer);
++void hybris_tls_initialize_current_thread(void);
++int hybris_tls_current_thread_initialized(void);
++
++#ifdef __cplusplus
++}
++#endif
+
+-- 
+2.50.1

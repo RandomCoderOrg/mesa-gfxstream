@@ -1,0 +1,45 @@
+FROM ubuntu@sha256:3b06811b2afd352be909dd088a004166d665dc76d38b13eada33522a9d915c6f
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    autoconf \
+    automake \
+    bison \
+    build-essential \
+    ca-certificates \
+    cmake \
+    flex \
+    gettext \
+    git \
+    libdrm-dev \
+    libelf-dev \
+    libexpat1-dev \
+    libtool \
+    libvulkan-dev \
+    libx11-dev \
+    libx11-xcb-dev \
+    libxdamage-dev \
+    libxfixes-dev \
+    libxrandr-dev \
+    libxxf86vm-dev \
+    libxcb-dri2-0-dev \
+    libxcb-dri3-dev \
+    libxcb-glx0-dev \
+    libxcb-present-dev \
+    libxcb-randr0-dev \
+    libxcb-shm0-dev \
+    libxcb-sync-dev \
+    libxcb-xfixes0-dev \
+    libxshmfence-dev \
+    libzstd-dev \
+    meson \
+    ninja-build \
+    pkg-config \
+    python3 \
+    python3-mako \
+    python3-packaging \
+    python3-yaml \
+    xz-utils
+
+WORKDIR /work

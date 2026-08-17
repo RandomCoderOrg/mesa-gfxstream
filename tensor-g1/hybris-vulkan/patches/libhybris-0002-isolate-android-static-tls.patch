@@ -1,0 +1,183 @@
+--- a/hybris/common/q/linker_tls.cpp
++++ b/hybris/common/q/linker_tls.cpp
+@@ -41,12 +41,54 @@
+ #include "linker_main.h"
+ #include "linker_soinfo.h"
+ #include <stdint.h>
++#include <pthread.h>
++#include <stdlib.h>
+ 
+ __LIBC_HIDDEN__ _Atomic(size_t) __libc_tls_generation_copy = {SIZE_MAX};
+ 
+ static bool g_static_tls_finished;
+ static std::vector<TlsModule> g_tls_modules;
+ 
++static pthread_key_t g_hybris_static_tls_key;
++static pthread_once_t g_hybris_static_tls_key_once = PTHREAD_ONCE_INIT;
++static thread_local void* g_hybris_static_tls_cache;
++
++static void destroy_hybris_static_tls(void* ptr) {
++  free(ptr);
++}
++
++static void make_hybris_static_tls_key() {
++  if (pthread_key_create(&g_hybris_static_tls_key, destroy_hybris_static_tls) != 0) {
++    abort();
++  }
++}
++
++extern "C" void* __hybris_static_tls_address(size_t offset) {
++  if (g_hybris_static_tls_cache != nullptr) {
++    return static_cast<char*>(g_hybris_static_tls_cache) + offset;
++  }
++
++  pthread_once(&g_hybris_static_tls_key_once, make_hybris_static_tls_key);
++  void* block = pthread_getspecific(g_hybris_static_tls_key);
++  if (block == nullptr) {
++    const StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
++    const size_t alignment = layout.alignment() > alignof(void*)
++                                 ? layout.alignment()
++                                 : alignof(void*);
++    if (posix_memalign(&block, alignment, layout.size()) != 0) {
++      abort();
++    }
++    memset(block, 0, layout.size());
++    __init_static_tls(block);
++    if (pthread_setspecific(g_hybris_static_tls_key, block) != 0) {
++      free(block);
++      abort();
++    }
++  }
++  g_hybris_static_tls_cache = block;
++  return static_cast<char*>(block) + offset;
++}
++
+ static size_t get_unused_module_index() {
+   for (size_t i = 0; i < g_tls_modules.size(); ++i) {
+     if (g_tls_modules[i].soinfo_ptr == nullptr) {
+--- a/hybris/common/q/tlsdesc_resolver.S
++++ b/hybris/common/q/tlsdesc_resolver.S
+@@ -34,8 +34,93 @@
+ // These resolver functions must preserve every register except x0. They set x0
+ // to the offset of the TLS symbol relative to the thread pointer.
+ 
++#define SAVE_REG(x, slot)                 \
++    str x, [sp, #((slot) * 8)];           \
++    .cfi_rel_offset x, (slot) * 8;
++
++#define SAVE_GPR_PAIR(x, y, slot)         \
++    stp x, y, [sp, #((slot) * 8)];        \
++    .cfi_rel_offset x, (slot) * 8;        \
++    .cfi_rel_offset y, ((slot) + 1) * 8;
++
++#define SAVE_VEC_PAIR(x, y, slot)         \
++    stp x, y, [sp, #((slot) * 8)];        \
++    .cfi_rel_offset x, (slot) * 8;        \
++    .cfi_rel_offset y, ((slot) + 2) * 8;
++
++#define RESTORE_REG(x, slot)              \
++    ldr x, [sp, #((slot) * 8)];           \
++    .cfi_restore x;
++
++#define RESTORE_REG_PAIR(x, y, slot)      \
++    ldp x, y, [sp, #((slot) * 8)];        \
++    .cfi_restore x;                       \
++    .cfi_restore y;
++
+ ENTRY_PRIVATE(tlsdesc_resolver_static)
++  sub sp, sp, #(8 * 84)
++  .cfi_def_cfa_offset (8 * 84)
++  SAVE_GPR_PAIR(x29, x30, 0)
++  mov x29, sp
++  SAVE_GPR_PAIR(x1,  x2,  2)
++  SAVE_GPR_PAIR(x3,  x4,  4)
++  SAVE_GPR_PAIR(x5,  x6,  6)
++  SAVE_GPR_PAIR(x7,  x8,  8)
++  SAVE_GPR_PAIR(x9,  x10, 10)
++  SAVE_GPR_PAIR(x11, x12, 12)
++  SAVE_GPR_PAIR(x13, x14, 14)
++  SAVE_GPR_PAIR(x15, x16, 16)
++  SAVE_REG(x17, 18)
++  SAVE_VEC_PAIR(q0,  q1,  20)
++  SAVE_VEC_PAIR(q2,  q3,  24)
++  SAVE_VEC_PAIR(q4,  q5,  28)
++  SAVE_VEC_PAIR(q6,  q7,  32)
++  SAVE_VEC_PAIR(q8,  q9,  36)
++  SAVE_VEC_PAIR(q10, q11, 40)
++  SAVE_VEC_PAIR(q12, q13, 44)
++  SAVE_VEC_PAIR(q14, q15, 48)
++  SAVE_VEC_PAIR(q16, q17, 52)
++  SAVE_VEC_PAIR(q18, q19, 56)
++  SAVE_VEC_PAIR(q20, q21, 60)
++  SAVE_VEC_PAIR(q22, q23, 64)
++  SAVE_VEC_PAIR(q24, q25, 68)
++  SAVE_VEC_PAIR(q26, q27, 72)
++  SAVE_VEC_PAIR(q28, q29, 76)
++  SAVE_VEC_PAIR(q30, q31, 80)
++
+   ldr x0, [x0, #8]
++  bl __hybris_static_tls_address
++  mrs x1, tpidr_el0
++  sub x0, x0, x1
++
++  RESTORE_REG_PAIR(q30, q31, 80)
++  RESTORE_REG_PAIR(q28, q29, 76)
++  RESTORE_REG_PAIR(q26, q27, 72)
++  RESTORE_REG_PAIR(q24, q25, 68)
++  RESTORE_REG_PAIR(q22, q23, 64)
++  RESTORE_REG_PAIR(q20, q21, 60)
++  RESTORE_REG_PAIR(q18, q19, 56)
++  RESTORE_REG_PAIR(q16, q17, 52)
++  RESTORE_REG_PAIR(q14, q15, 48)
++  RESTORE_REG_PAIR(q12, q13, 44)
++  RESTORE_REG_PAIR(q10, q11, 40)
++  RESTORE_REG_PAIR(q8, q9, 36)
++  RESTORE_REG_PAIR(q6, q7, 32)
++  RESTORE_REG_PAIR(q4, q5, 28)
++  RESTORE_REG_PAIR(q2, q3, 24)
++  RESTORE_REG_PAIR(q0, q1, 20)
++  RESTORE_REG(x17, 18)
++  RESTORE_REG_PAIR(x15, x16, 16)
++  RESTORE_REG_PAIR(x13, x14, 14)
++  RESTORE_REG_PAIR(x11, x12, 12)
++  RESTORE_REG_PAIR(x9, x10, 10)
++  RESTORE_REG_PAIR(x7, x8, 8)
++  RESTORE_REG_PAIR(x5, x6, 6)
++  RESTORE_REG_PAIR(x3, x4, 4)
++  RESTORE_REG_PAIR(x1, x2, 2)
++  RESTORE_REG_PAIR(x29, x30, 0)
++  add sp, sp, #(8 * 84)
++  .cfi_def_cfa_offset 0
+   ret
+ END(tlsdesc_resolver_static)
+ 
+@@ -87,29 +172,6 @@
+   b tlsdesc_resolver_dynamic_slow_path
+ END(tlsdesc_resolver_dynamic)
+ 
+-#define SAVE_REG(x, slot)                 \
+-    str x, [sp, #((slot) * 8)];           \
+-    .cfi_rel_offset x, (slot) * 8;
+-
+-#define SAVE_GPR_PAIR(x, y, slot)         \
+-    stp x, y, [sp, #((slot) * 8)];        \
+-    .cfi_rel_offset x, (slot) * 8;        \
+-    .cfi_rel_offset y, ((slot) + 1) * 8;
+-
+-#define SAVE_VEC_PAIR(x, y, slot)         \
+-    stp x, y, [sp, #((slot) * 8)];        \
+-    .cfi_rel_offset x, (slot) * 8;        \
+-    .cfi_rel_offset y, ((slot) + 2) * 8;
+-
+-#define RESTORE_REG(x, slot)              \
+-    ldr x, [sp, #((slot) * 8)];           \
+-    .cfi_restore x;
+-
+-#define RESTORE_REG_PAIR(x, y, slot)      \
+-    ldp x, y, [sp, #((slot) * 8)];        \
+-    .cfi_restore x;                       \
+-    .cfi_restore y;
+-
+ // On entry, x0 is the address of a TlsDynamicResolverArg object rather than
+ // the TlsDescriptor address passed to the original resolver function.
+ ENTRY_PRIVATE(tlsdesc_resolver_dynamic_slow_path)

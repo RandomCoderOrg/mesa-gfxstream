@@ -1,0 +1,19 @@
+From: uDroid graphics runtime
+Subject: [PATCH] build: respect the caller-selected configuration for X11
+
+Do not force the entire project to Debug merely because the X11 backend is
+enabled. Release packaging must retain the optimization and NDEBUG policy
+selected by its reproducible build environment.
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -246,8 +246,6 @@ if(BUILD_WSI_X11 AND ANDROID_HEADERS_INCLUDE_DIR STREQUAL "")
+    message(FATAL_ERROR "ANDROID_HEADERS_INCLUDE_DIR is required for X11 AHardwareBuffer WSI")
+ endif()
+ if(BUILD_WSI_X11)
+-   set(CMAKE_BUILD_TYPE "Debug")
+-
+    add_library(wsi_x11 STATIC
+       wsi/x11/surface_properties.cpp
+       wsi/x11/surface.cpp
