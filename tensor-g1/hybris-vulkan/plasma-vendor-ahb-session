@@ -1,0 +1,26 @@
+#!/bin/bash
+set -euo pipefail
+
+cleanup()
+{
+    test -z "${plasma_pid:-}" || kill "$plasma_pid" 2>/dev/null || true
+    test -z "${kded_pid:-}" || kill "$kded_pid" 2>/dev/null || true
+    test -z "${activity_pid:-}" || kill "$activity_pid" 2>/dev/null || true
+    test -z "${kwin_pid:-}" || kill "$kwin_pid" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# Compositing is intentionally enabled. KWIN_COMPOSE=N is not the smooth AHB
+# checkpoint and must remain a separate diagnostic profile.
+kwin_x11 --replace > /tmp/vendor-ahb-kwin.log 2>&1 &
+kwin_pid=$!
+sleep 8
+
+/usr/lib/aarch64-linux-gnu/libexec/kactivitymanagerd > /tmp/vendor-ahb-kactivity.log 2>&1 &
+activity_pid=$!
+kded5 > /tmp/vendor-ahb-kded.log 2>&1 &
+kded_pid=$!
+
+plasmashell --replace > /tmp/vendor-ahb-plasma.log 2>&1 &
+plasma_pid=$!
+wait "$plasma_pid"

@@ -212,6 +212,15 @@ applying it: direct `GL_TEXTURE_EXTERNAL_OES` sampling, producer detachment,
 and DMA-BUF CPU synchronization did not pass the visual artifact gate or make
 Plasma panel interactions responsive.
 
+The later Qt/Plasma crash investigation is preserved separately in the
+[`libhybris TLS sidecar checkpoint`](experiments/2026-08-12-libhybris-tls-sidecar.md).
+It found that Android vendor static TLS was being placed inside glibc's thread
+control block. The proof patch isolates Android static TLS per host thread and
+allowed KWin and threaded Qt Quick Plasma to run through Zink and the vendor
+Vulkan bridge. This is the current accelerated-desktop checkpoint, but it is
+not yet the default launcher because dynamic TLS and late module loading still
+need hardening.
+
 The default `TENSOR_VK_WSI_MODE=copy` uses a DRI3 DMA-BUF pixmap followed by a
 Termux:X11 server-side GPU copy. It was the fastest and most consistent mode in
 the initial Tensor G1 measurements. The alternatives are:

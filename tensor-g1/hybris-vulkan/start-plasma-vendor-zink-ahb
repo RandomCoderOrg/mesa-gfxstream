@@ -1,0 +1,51 @@
+#!/bin/bash
+set -euo pipefail
+
+export DISPLAY="${DISPLAY:-:2}"
+export LIBGL_DRIVERS_PATH=/root/mesa-kopper-build2/src/gallium/targets/dri
+export LIBGL_KOPPER_DRI2=1
+export MESA_LOADER_DRIVER_OVERRIDE=zink
+
+export LD_LIBRARY_PATH=/root/hybris-rootless/lib:/root/hybris-rootless/ginkage-ahb-prefix/share/vulkan/implicit_layer.d:/root/hybris-rootless/src/sysvk:/root/hybris-rootless/src/libhybris-upstream/hybris/hardware/.libs:/root/hybris-rootless/src/libhybris-upstream/hybris/common/.libs
+export HYBRIS_FORCE_LEGACY_PROPERTY_HOOKS=1
+export HYBRIS_SKIP_BIONIC_PROPERTY_INIT=1
+export HYBRIS_LINKER_DIR=/root/hybris-rootless/src/libhybris-upstream/hybris/common/q/.libs
+export HYBRIS_PTHREAD_RAW_EXIT=1
+export HYBRIS_LD_LIBRARY_PATH=/root/hybris-rootless/android-bionic:/system/lib64:/system_ext/lib64:/product/lib64:/vendor/lib64:/vendor/lib64/egl:/vendor/lib64/hw:/odm/lib64:/apex/com.android.runtime/lib64/bionic:/apex/com.android.i18n/lib64:/apex/com.android.tethering/lib64
+
+export ANDROID_ROOT=/system
+export ANDROID_DATA=/data
+export ANDROID_RUNTIME_ROOT=
+export ANDROID_ART_ROOT=/apex/com.android.art
+export ANDROID_I18N_ROOT=/apex/com.android.i18n
+export ANDROID_TZDATA_ROOT=/apex/com.android.tzdata
+
+export VK_DRIVER_FILES=/root/hybris-rootless/src/sysvk/sysvk_upstream_nodelete_icd.json
+export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+export VK_INSTANCE_LAYERS=VK_LAYER_window_system_integration
+export VK_LAYER_PATH=/root/hybris-rootless/ginkage-ahb-prefix/share/vulkan/implicit_layer.d
+export VK_LOADER_DEBUG=warn,error
+export WSI_X11_AHB=1
+export WSI_X11_PRIVATE_CONNECTION=1
+
+export XDG_SESSION_TYPE=x11
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+export DESKTOP_SESSION=plasma
+export KDE_FULL_SESSION=true
+export KDE_SESSION_VERSION=5
+export KDE_CRASH_HANDLER=0
+export QT_QPA_PLATFORM=xcb
+export QT_XCB_GL_INTEGRATION=xcb_glx
+export QT_QUICK_BACKEND=opengl
+export PLASMA_QUICK_BACKEND=opengl
+export QSG_RENDER_LOOP=threaded
+export XDG_RUNTIME_DIR=/tmp/vendor-kde-kopper-runtime
+export XDG_CONFIG_HOME=/tmp/vendor-kde-kopper-config
+export XDG_CACHE_HOME=/tmp/vendor-kde-kopper-cache
+export XDG_DATA_HOME=/tmp/vendor-kde-kopper-data
+
+mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
+chmod 700 "$XDG_RUNTIME_DIR"
+
+exec dbus-run-session -- /usr/local/bin/plasma-vendor-ahb-session

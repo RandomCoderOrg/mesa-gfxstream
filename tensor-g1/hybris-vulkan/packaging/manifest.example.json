@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "component": "udroid-graphics",
+  "version": "0.1.0-dev.1",
+  "target": {
+    "os": "linux",
+    "arch": "aarch64",
+    "libc": "glibc",
+    "glibcMin": "2.35",
+    "androidApiMin": 26
+  },
+  "x11": {
+    "ahardwareBufferProtocol": 1
+  },
+  "profiles": [
+    "vendor-vulkan:ginkage-ahb",
+    "vendor-vulkan:ginkage-dmabuf-copy",
+    "vendor-vulkan:ginkage-dmabuf-zero",
+    "vendor-vulkan:shm"
+  ],
+  "sources": {
+    "mesa": "0000000000000000000000000000000000000000",
+    "libhybris": "7079712a42ea2754adf747e70c6cc75764c8596e",
+    "sysvk": "23ecd775ed6fe06bb5ac0063b5f981f70c543c67",
+    "ginkage": "e2e9eaac5494f26d16928471e190057fb6eb18fb"
+  },
+  "patches": [],
+  "knownMissingVulkanFeatures": [
+    "fillModeNonSolid",
+    "shaderClipDistance"
+  ],
+  "files": [
+    {
+      "path": "bin/udroid-gpu-run",
+      "type": "file",
+      "mode": "0755",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

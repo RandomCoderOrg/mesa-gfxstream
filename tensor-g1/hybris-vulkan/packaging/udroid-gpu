@@ -1,0 +1,230 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
+component_base=${UDROID_GPU_HOME:-$PREFIX/opt/udroid-gpu}
+active_file=$component_base/active-version
+guest_mount=/opt/udroid/graphics
+verifier=${UDROID_GPU_VERIFIER:-$PREFIX/libexec/udroid-gpu/verify-runtime.py}
+
+die()
+{
+    printf 'udroid-gpu: %s\n' "$*" >&2
+    exit 1
+}
+
+usage()
+{
+    cat <<'EOF'
+Usage: udroid-gpu COMMAND [ARG...]
+
+Commands:
+  doctor                         inspect device and active runtime
+  list                           list installed component versions
+  verify [VERSION]               verify an installed component
+  activate VERSION              select an installed component atomically
+  install-dir DIRECTORY         install a verified unpacked component
+  proot-login DISTRO [--profile PROFILE] [-- COMMAND...]
+  run [--profile PROFILE] -- COMMAND...   run inside a mounted guest
+
+The development checkpoint intentionally accepts only an already extracted,
+verified directory. Network download and archive extraction belong to the
+signed release-index installer, not this launcher.
+EOF
+}
+
+valid_version()
+{
+    [[ $1 =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]
+}
+
+active_version()
+{
+    [[ -f $active_file ]] || die "no active graphics component"
+    local version
+    IFS= read -r version < "$active_file"
+    valid_version "$version" || die "invalid active-version file"
+    printf '%s\n' "$version"
+}
+
+runtime_for()
+{
+    local version=$1
+    valid_version "$version" || die "invalid component version: $version"
+    printf '%s/%s/linux-aarch64-glibc\n' "$component_base" "$version"
+}
+
+verify_runtime()
+{
+    local root=$1
+    [[ -f $verifier ]] || die "runtime verifier is missing: $verifier"
+    python3 "$verifier" "$root"
+}
+
+cmd_list()
+{
+    local active=
+    [[ -f $active_file ]] && IFS= read -r active < "$active_file"
+    [[ -d $component_base ]] || return 0
+    local directory version
+    for directory in "$component_base"/*/linux-aarch64-glibc; do
+        [[ -d $directory ]] || continue
+        version=${directory%/linux-aarch64-glibc}
+        version=${version##*/}
+        if [[ $version == "$active" ]]; then
+            printf '* %s\n' "$version"
+        else
+            printf '  %s\n' "$version"
+        fi
+    done
+}
+
+cmd_verify()
+{
+    local version=${1:-$(active_version)}
+    verify_runtime "$(runtime_for "$version")"
+}
+
+cmd_activate()
+{
+    (($# == 1)) || die "activate requires VERSION"
+    local version=$1 root temporary
+    root=$(runtime_for "$version")
+    verify_runtime "$root"
+    mkdir -p "$component_base"
+    temporary=$active_file.tmp.$$
+    printf '%s\n' "$version" > "$temporary"
+    mv -f "$temporary" "$active_file"
+    printf 'activated %s\n' "$version"
+}
+
+cmd_install_dir()
+{
+    (($# == 1)) || die "install-dir requires DIRECTORY"
+    local source=$1 version destination staging target_parent
+    source=$(CDPATH='' cd -- "$source" && pwd)
+    verify_runtime "$source"
+    version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$source/manifest.json")
+    valid_version "$version" || die "manifest has an invalid version"
+    target_parent=$component_base/$version
+    destination=$target_parent/linux-aarch64-glibc
+    staging=$target_parent/.staging.$$
+    [[ ! -e $destination ]] || die "component $version is already installed"
+    mkdir -p "$target_parent"
+    trap 'rm -rf -- "$staging"' EXIT
+    cp -a -- "$source" "$staging"
+    verify_runtime "$staging"
+    mv "$staging" "$destination"
+    trap - EXIT
+    cmd_activate "$version"
+}
+
+property()
+{
+    command -v getprop >/dev/null 2>&1 && getprop "$1" || true
+}
+
+print_probe()
+{
+    printf '%-25s %s\n' "$1" "$2"
+}
+
+cmd_doctor()
+{
+    local version=none root=none runtime_state=not-installed
+    if [[ -f $active_file ]]; then
+        version=$(active_version)
+        root=$(runtime_for "$version")
+        if verify_runtime "$root" >/dev/null 2>&1; then
+            runtime_state=verified
+        else
+            runtime_state=invalid
+        fi
+    fi
+    local vulkan_hal=not-found
+    local candidate
+    for candidate in /vendor/lib64/hw/vulkan.*.so /system/lib64/hw/vulkan.*.so; do
+        [[ -e $candidate ]] || continue
+        vulkan_hal=$candidate
+        break
+    done
+    local dma_heap=unavailable
+    [[ -d /dev/dma_heap ]] && dma_heap=available
+    local x11=not-installed
+    command -v termux-x11 >/dev/null 2>&1 && x11=$(command -v termux-x11)
+
+    print_probe android-api "$(property ro.build.version.sdk)"
+    print_probe android-abi "$(property ro.product.cpu.abi)"
+    print_probe kernel-arch "$(uname -m)"
+    print_probe vendor-vulkan-hal "$vulkan_hal"
+    print_probe dma-heap "$dma_heap"
+    print_probe termux-x11 "$x11"
+    print_probe active-version "$version"
+    print_probe runtime-root "$root"
+    print_probe runtime-state "$runtime_state"
+}
+
+cmd_proot_login()
+{
+    (($# >= 1)) || die "proot-login requires a distro alias"
+    local distro=$1 profile=vendor-vulkan:ginkage-ahb
+    shift
+    if [[ ${1:-} == --profile ]]; then
+        (($# >= 2)) || die "--profile requires a value"
+        profile=$2
+        shift 2
+    fi
+    [[ ${1:-} != -- ]] || shift
+    command -v proot-distro >/dev/null 2>&1 || die "install proot-distro first"
+    local version root
+    version=$(active_version)
+    root=$(runtime_for "$version")
+    verify_runtime "$root"
+
+    # Current proot-distro owns Android's /dev, /proc, /sys, /system,
+    # /system_ext, /vendor, /odm, /product, /apex and linker-config bindings.
+    # Duplicating those here creates overlapping destination mounts. Use its
+    # narrow X11 bind where available and retain --shared-tmp for older builds.
+    local display=${DISPLAY:-:0}
+    local x11_option=--shared-tmp
+    if proot-distro login --help 2>&1 | grep -q -- '--shared-x11'; then
+        x11_option=--shared-x11
+    fi
+    local -a proot_options=(
+        "$x11_option"
+        --env "DISPLAY=$display"
+        --bind "$root:$guest_mount"
+    )
+
+    local -a command=("$guest_mount/bin/udroid-gpu-run" --profile "$profile" --)
+    if (($#)); then
+        command+=("$@")
+    else
+        command+=(/bin/bash -l)
+    fi
+    # Keep the alias immediately after `login` for compatibility with both the
+    # historical shell implementation and the current Python implementation.
+    exec proot-distro login "$distro" "${proot_options[@]}" -- "${command[@]}"
+}
+
+cmd_run()
+{
+    local runner=${UDROID_GRAPHICS_ROOT:-$guest_mount}/bin/udroid-gpu-run
+    [[ -x $runner ]] || die "graphics runtime is not mounted at ${runner%/bin/udroid-gpu-run}"
+    exec "$runner" "$@"
+}
+
+command_name=${1:-}
+[[ -n $command_name ]] || { usage; exit 2; }
+shift
+case "$command_name" in
+    doctor) cmd_doctor "$@" ;;
+    list) cmd_list "$@" ;;
+    verify) cmd_verify "$@" ;;
+    activate) cmd_activate "$@" ;;
+    install-dir) cmd_install_dir "$@" ;;
+    proot-login) cmd_proot_login "$@" ;;
+    run) cmd_run "$@" ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; die "unknown command: $command_name" ;;
+esac
