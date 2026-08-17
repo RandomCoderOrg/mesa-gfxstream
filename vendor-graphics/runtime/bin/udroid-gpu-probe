@@ -26,6 +26,7 @@ qualifier=${UDROID_WSI_QUALIFIER:-$runtime_root/libexec/run-wsi-qualification.sh
 present_probe=${UDROID_PRESENT_PROBE:-$runtime_root/libexec/x11-ahb-present-probe}
 protocol_probe=${UDROID_PROTOCOL_PROBE:-$runtime_root/libexec/x11-buffer-transport-protocol}
 stats_probe=${UDROID_PRESENT_STATS_PROBE:-$runtime_root/libexec/x11-present-stats}
+thread_probe=${UDROID_VULKAN_THREAD_PROBE:-$runtime_root/libexec/vulkan-thread-lifecycle}
 
 profile=vendor-vulkan:ginkage-ahb
 qualification=smoke
@@ -78,7 +79,13 @@ esac
     exit 3
 }
 
-for required in "$runner" "$qualifier" "$present_probe" "$protocol_probe" "$stats_probe"; do
+for required in \
+    "$runner" \
+    "$qualifier" \
+    "$present_probe" \
+    "$protocol_probe" \
+    "$stats_probe" \
+    "$thread_probe"; do
     [[ -x $required ]] || {
         printf 'udroid-gpu-probe: required executable is missing: %s\n' "$required" >&2
         exit 3
@@ -90,6 +97,7 @@ command=(
     --present-probe "$present_probe"
     --protocol-probe "$protocol_probe"
     --stats-probe "$stats_probe"
+    --thread-probe "$thread_probe"
     --profile "$qualification"
     --output "$output"
 )

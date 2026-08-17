@@ -13,6 +13,7 @@ Options:
   --present-probe PATH   vulkan-xcb-present binary
   --protocol-probe PATH  x11-buffer-transport-protocol binary
   --stats-probe PATH     x11-present-stats binary
+  --thread-probe PATH    Vulkan/libhybris TLS lifecycle binary
   --profile NAME         smoke or full (default: smoke)
   --output FILE          JSON result (default: stdout)
   --log FILE             raw probe transcript
@@ -25,6 +26,7 @@ EOF
 present_probe=./vulkan-xcb-present
 protocol_probe=./x11-buffer-transport-protocol
 stats_probe=./x11-present-stats
+thread_probe=./vulkan-thread-lifecycle
 profile=smoke
 output=-
 log=
@@ -44,6 +46,11 @@ while (($#)); do
         --stats-probe)
             (($# >= 2)) || { usage; exit 2; }
             stats_probe=$2
+            shift 2
+            ;;
+        --thread-probe)
+            (($# >= 2)) || { usage; exit 2; }
+            thread_probe=$2
             shift 2
             ;;
         --profile)
@@ -80,6 +87,7 @@ case "$profile" in
         lost_query_processes=3
         live_loss_processes=5
         connection_loss_processes=5
+        thread_cycles=25
         ;;
     full)
         steady_frames=60
@@ -88,6 +96,7 @@ case "$profile" in
         lost_query_processes=25
         live_loss_processes=50
         connection_loss_processes=25
+        thread_cycles=100
         ;;
     *)
         echo "Unknown profile: $profile" >&2
@@ -105,6 +114,10 @@ esac
 }
 [[ -x $stats_probe ]] || {
     echo "Present statistics probe is not executable: $stats_probe" >&2
+    exit 3
+}
+[[ -x $thread_probe ]] || {
+    echo "Vulkan thread lifecycle probe is not executable: $thread_probe" >&2
     exit 3
 }
 
@@ -158,6 +171,20 @@ repeat_probe()
 }
 
 suite_start=$SECONDS
+printf 'BEGIN stage=vulkan-thread-lifecycle command=%q 8 %q\n' \
+    "$thread_probe" "$thread_cycles" >> "$log"
+if ! thread_output=$($thread_probe 8 "$thread_cycles" 2>&1); then
+    printf '%s\nEND stage=vulkan-thread-lifecycle result=fail\n' "$thread_output" >> "$log"
+    fail vulkan-thread-lifecycle
+fi
+printf '%s\nEND stage=vulkan-thread-lifecycle result=pass\n' "$thread_output" >> "$log"
+[[ $thread_output == *"PASS threads=8 cycles-per-thread=$thread_cycles"* ]] || \
+    fail vulkan-thread-lifecycle-result
+[[ $thread_output == *"tls-isolated=true host-canary=true failures=0"* ]] || \
+    fail vulkan-thread-lifecycle-tls
+printf 'PASS stage=vulkan-thread-lifecycle threads=8 cycles=%s\n' \
+    "$thread_cycles" >&2
+
 protocol_json=$($protocol_probe 2>>"$log") || fail protocol
 printf 'PROTOCOL %s\n' "$protocol_json" >> "$log"
 [[ $protocol_json == *'"compatible":true'* ]] || fail protocol-compatible
@@ -240,6 +267,7 @@ result=$(printf '%s\n' \
     "  \"rawLog\": \"$log\"," \
     "  \"protocol\": $protocol_json," \
     '  "results": {' \
+    "    \"vulkanThreadLifecycle\": {\"threads\": 8, \"cyclesPerThread\": $thread_cycles, \"totalLifecycles\": $((8 * thread_cycles)), \"tlsIsolated\": true, \"hostCanary\": true, \"pass\": true}," \
     "    \"steadyPresent\": {\"frames\": $steady_frames, \"durationMs\": $steady_duration_ms, \"fps\": $steady_fps, \"pass\": true}," \
     "    \"immediateTeardown\": {\"cycles\": $create_destroy_cycles, \"pass\": true}," \
     "    \"resizeRetirement\": {\"processes\": $resize_processes, \"passes\": $resize_processes}," \

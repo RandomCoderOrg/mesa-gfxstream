@@ -47,6 +47,22 @@
         "presentOffload"
       ],
       "properties": {
+        "vulkanThreadLifecycle": {
+          "type": "object",
+          "required": [
+            "threads", "cyclesPerThread", "totalLifecycles",
+            "tlsIsolated", "hostCanary", "pass"
+          ],
+          "properties": {
+            "threads": { "type": "integer", "minimum": 1 },
+            "cyclesPerThread": { "type": "integer", "minimum": 1 },
+            "totalLifecycles": { "type": "integer", "minimum": 1 },
+            "tlsIsolated": { "const": true },
+            "hostCanary": { "const": true },
+            "pass": { "const": true }
+          },
+          "additionalProperties": false
+        },
         "steadyPresent": {
           "type": "object",
           "required": ["frames", "durationMs", "fps", "pass"],

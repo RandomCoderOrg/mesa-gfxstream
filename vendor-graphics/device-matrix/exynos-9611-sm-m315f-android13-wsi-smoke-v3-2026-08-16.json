@@ -1,0 +1,26 @@
+{
+  "schema": 2,
+  "generatedAt": "2026-08-16T13:23:04Z",
+  "profile": "smoke",
+  "gpu": "Mali-G72",
+  "vulkanApi": "1.1.213",
+  "suiteDurationSeconds": 37,
+  "rawLog": "/root/udroid-gpu-test/samsung-clean-wsi-smoke-20260816.log",
+  "protocol": {"connected":true,"propertyPresent":true,"version":1,"capabilities":15,"ahbSocket":true,"rgba":true,"syncFileAcquire":true,"gpuCopy":true,"bgraModifier":1255,"rgbaModifier":1257,"compatible":true},
+  "results": {
+    "vulkanThreadLifecycle": {"threads": 8, "cyclesPerThread": 25, "totalLifecycles": 200, "tlsIsolated": true, "hostCanary": true, "pass": true},
+    "steadyPresent": {"frames": 30, "durationMs": 470.262, "fps": 63.79, "pass": true},
+    "immediateTeardown": {"cycles": 20, "pass": true},
+    "resizeRetirement": {"processes": 3, "passes": 3},
+    "lostCapabilityQuery": {"processes": 3, "passes": 3},
+    "liveSurfaceLoss": {"processes": 5, "passes": 5},
+    "xConnectionLoss": {"processes": 5, "passes": 5},
+    "presentOffload": {
+      "before": {"version":1,"attempts":2,"offloads":1,"fallbacks":{"disabled":0,"rendererUnavailable":1,"bufferUnsupported":0,"regionUnsupported":0,"queueFull":0},"consistent":true},
+      "after": {"version":1,"attempts":42,"offloads":41,"fallbacks":{"disabled":0,"rendererUnavailable":1,"bufferUnsupported":0,"regionUnsupported":0,"queueFull":0},"consistent":true},
+      "attemptsDelta": 40,
+      "offloadsDelta": 40,
+      "pass": true
+    }
+  }
+}

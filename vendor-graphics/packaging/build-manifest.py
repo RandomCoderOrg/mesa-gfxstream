@@ -16,10 +16,13 @@ from typing import Any, Dict, Iterable, List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_contract import (  # noqa: E402
+    ElfContractError,
+    LIBHYBRIS_COMMON_PATH,
     PROFILE_NAMES,
     REQUIRED_EXECUTABLES,
     REQUIRED_PATHS,
     SOURCE_NAMES,
+    validate_libhybris_common,
 )
 
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -173,6 +176,10 @@ def build(args: argparse.Namespace) -> Dict[str, Any]:
     for relative in REQUIRED_EXECUTABLES:
         if not os.access(root / relative, os.X_OK):
             raise BuildError(f"required runtime path is not executable: {relative}")
+    try:
+        validate_libhybris_common(root / LIBHYBRIS_COMMON_PATH)
+    except ElfContractError as exc:
+        raise BuildError(f"unsafe libhybris runtime: {exc}") from exc
     for stale in (root / "manifest.json", root / "SHA256SUMS"):
         if stale.exists() or stale.is_symlink():
             stale.unlink()

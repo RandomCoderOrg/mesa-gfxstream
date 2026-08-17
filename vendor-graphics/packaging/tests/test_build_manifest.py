@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from runtime_fixture import minimal_aarch64_shared_object
+
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "build-manifest.py"
 SPEC = importlib.util.spec_from_file_location("build_manifest", MODULE_PATH)
@@ -57,6 +59,9 @@ class BuildManifestTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
             path.chmod(0o755 if relative in BUILD_MANIFEST.REQUIRED_EXECUTABLES else 0o644)
+        (self.root / BUILD_MANIFEST.LIBHYBRIS_COMMON_PATH).write_bytes(
+            minimal_aarch64_shared_object()
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -71,11 +76,15 @@ class BuildManifestTests(unittest.TestCase):
             source=[
                 f"mesa={'1' * 40}",
                 f"libhybris={'2' * 40}",
-                f"sysvk={'3' * 40}",
-                f"ginkage={'4' * 40}",
+                f"android_headers={'3' * 40}",
+                f"sysvk={'4' * 40}",
+                f"ginkage={'5' * 40}",
+                f"vulkan_headers={'6' * 40}",
+                f"wsi_headers={'7' * 40}",
+                f"vulkan_loader={'8' * 40}",
             ],
             patch=["test-patch"],
-            readelf="readelf",
+            readelf="/usr/bin/true",
         )
 
     def test_builds_runtime_that_verifier_accepts(self) -> None:

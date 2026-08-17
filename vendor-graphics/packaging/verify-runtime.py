@@ -15,10 +15,13 @@ from typing import Any, Dict, Iterable, List, Set
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_contract import (  # noqa: E402
+    ElfContractError,
+    LIBHYBRIS_COMMON_PATH,
     PROFILE_NAMES,
     REQUIRED_EXECUTABLES,
     REQUIRED_PATHS,
     SOURCE_NAMES,
+    validate_libhybris_common,
 )
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -236,6 +239,11 @@ def verify(root: Path) -> Dict[str, Any]:
     if manifest_hash != checksums["manifest.json"]:
         raise VerificationError("manifest hash mismatch")
 
+    try:
+        tls_reserve_bytes = validate_libhybris_common(root / LIBHYBRIS_COMMON_PATH)
+    except ElfContractError as exc:
+        raise VerificationError(f"unsafe libhybris runtime: {exc}") from exc
+
     return {
         "ok": True,
         "component": manifest["component"],
@@ -243,6 +251,7 @@ def verify(root: Path) -> Dict[str, Any]:
         "target": manifest["target"],
         "profiles": manifest["profiles"],
         "filesVerified": len(files) + 1,
+        "libhybrisTlsBytes": tls_reserve_bytes,
     }
 
 

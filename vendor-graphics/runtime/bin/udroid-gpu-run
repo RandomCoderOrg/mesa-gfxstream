@@ -84,6 +84,7 @@ icd=$runtime_root/share/vulkan/icd.d/sysvk.json
 
 for required in \
     "$mesa_dir/dri/zink_dri.so" \
+    "$bridge_dir/libhybris-common.so.1" \
     "$linker_dir/q.so" \
     "$icd" \
     "$layer_dir/VkLayer_window_system_integration.json"; do
@@ -93,10 +94,55 @@ for required in \
     }
 done
 
-# Android's normal hw_get_module() lookup remains the bridge's first choice.
-# Rootless guests sometimes cannot resolve its property-selected module. Give
-# sysvk a fallback only when discovery is unambiguous; never choose the first
-# of multiple vendor HALs silently.
+# The patched embedded linker must know the root Android TLS owner before the
+# application reaches main(). Prefer an explicit path from device
+# qualification, then Android's own hardware properties, and only then the
+# unambiguous-single-HAL fallback used by the first Exynos proof.
+android_property()
+{
+    local key=$1 getter value
+    for getter in getprop /system/bin/getprop; do
+        if [[ $getter != */* ]] && ! command -v "$getter" >/dev/null 2>&1; then
+            continue
+        fi
+        [[ $getter != */* || -x $getter ]] || continue
+        value=$($getter "$key" 2>/dev/null || true)
+        if [[ $value =~ ^[A-Za-z0-9._-]+$ ]]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+    done
+    return 1
+}
+
+hal_source=explicit
+if [[ -n ${HYBRIS_TLS_PRELOAD:-} && -z ${UDROID_VULKAN_HAL:-} ]]; then
+    export UDROID_VULKAN_HAL=$HYBRIS_TLS_PRELOAD
+    hal_source=tls-preload
+fi
+
+if [[ -z ${UDROID_VULKAN_HAL:-} ]]; then
+    hal_source=
+    for property_name in \
+        ro.hardware.vulkan \
+        ro.board.platform \
+        ro.hardware \
+        ro.product.board; do
+        property_value=$(android_property "$property_name" || true)
+        [[ -n $property_value ]] || continue
+        for candidate in \
+            "/vendor/lib64/hw/vulkan.$property_value.so" \
+            "/odm/lib64/hw/vulkan.$property_value.so" \
+            "/system/lib64/hw/vulkan.$property_value.so"; do
+            if [[ -r $candidate ]]; then
+                export UDROID_VULKAN_HAL=$candidate
+                hal_source=android-property:$property_name
+                break 2
+            fi
+        done
+    done
+fi
+
 if [[ -z ${UDROID_VULKAN_HAL:-} ]]; then
     vulkan_hals=()
     for candidate in \
@@ -108,10 +154,22 @@ if [[ -z ${UDROID_VULKAN_HAL:-} ]]; then
     done
     if ((${#vulkan_hals[@]} == 1)); then
         export UDROID_VULKAN_HAL=${vulkan_hals[0]}
+        hal_source=single-readable-hal
     elif ((${#vulkan_hals[@]} > 1)); then
-        printf 'udroid-gpu-run: multiple Vulkan HALs found; normal Android lookup only\n' >&2
+        printf 'udroid-gpu-run: multiple Vulkan HALs found; set UDROID_VULKAN_HAL to the qualified module\n' >&2
+        exit 4
     fi
 fi
+
+[[ -n ${UDROID_VULKAN_HAL:-} ]] || {
+    printf 'udroid-gpu-run: no Vulkan HAL found; device qualification must select one\n' >&2
+    exit 4
+}
+if [[ -n ${HYBRIS_TLS_PRELOAD:-} && $HYBRIS_TLS_PRELOAD != "$UDROID_VULKAN_HAL" ]]; then
+    printf 'udroid-gpu-run: HYBRIS_TLS_PRELOAD and UDROID_VULKAN_HAL disagree\n' >&2
+    exit 4
+fi
+export HYBRIS_TLS_PRELOAD=$UDROID_VULKAN_HAL
 
 export UDROID_GRAPHICS_ROOT=$runtime_root
 export UDROID_RESOLVED_RENDERER=vendor-vulkan
@@ -120,6 +178,23 @@ export LIBGL_DRIVERS_PATH=$mesa_dir/dri
 export LIBGL_KOPPER_DRI2=1
 export MESA_LOADER_DRIVER_OVERRIDE=zink
 export LD_LIBRARY_PATH=$mesa_dir:$bridge_dir:$layer_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+hybris_common=$bridge_dir/libhybris-common.so.1
+ahb_wrapper=$bridge_dir/libahb-wrapper.so
+preload_tail=
+preload_input=${LD_PRELOAD:-}
+preload_input=${preload_input// /:}
+if [[ -n $preload_input ]]; then
+    IFS=: read -r -a preload_entries <<< "$preload_input"
+    for preload_entry in "${preload_entries[@]}"; do
+        [[ -n $preload_entry ]] || continue
+        case "$preload_entry" in
+            "$hybris_common"|"$ahb_wrapper") continue ;;
+        esac
+        preload_tail+=:${preload_entry}
+    done
+fi
+export LD_PRELOAD=$hybris_common:$ahb_wrapper$preload_tail
 
 export HYBRIS_FORCE_LEGACY_PROPERTY_HOOKS=1
 export HYBRIS_SKIP_BIONIC_PROPERTY_INIT=1
@@ -146,8 +221,8 @@ mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 if [[ ${UDROID_GPU_TRACE:-0} == 1 ]]; then
-    printf 'udroid-gpu-run: runtime=%s renderer=%s wsi=%s hal=%s\n' \
+    printf 'udroid-gpu-run: runtime=%s renderer=%s wsi=%s hal=%s hal-source=%s\n' \
         "$runtime_root" "$UDROID_RESOLVED_RENDERER" "$UDROID_RESOLVED_WSI" \
-        "${UDROID_VULKAN_HAL:-android-default}" >&2
+        "$UDROID_VULKAN_HAL" "$hal_source" >&2
 fi
 exec "$@"

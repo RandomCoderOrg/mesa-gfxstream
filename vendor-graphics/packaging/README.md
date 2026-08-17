@@ -18,7 +18,9 @@ builder and verifier. `manifest.json` describes compatibility and every payload
 entry. `SHA256SUMS` covers `manifest.json` and every regular payload file. The
 release asset digest protects the complete archive while `verify-runtime.py`
 catches extraction damage, unexpected files, unsafe links, wrong modes, mixed
-inventories and local tampering.
+inventories and local tampering. It also parses `libhybris-common.so.1`
+directly, without running it, and rejects a non-AArch64 object, a missing or
+out-of-range isolated `PT_TLS` reserve, or any embedded RPATH/RUNPATH.
 
 `build-manifest.py` finalizes a clean staging tree. In addition to generating
 those inventories, it rejects absolute or non-`$ORIGIN` ELF search paths,
@@ -41,8 +43,12 @@ runtime-contract paths are present and executable tools have the correct mode.
   --version 0.1.0-dev.1 \
   --source mesa="$mesa_revision" \
   --source libhybris="$libhybris_revision" \
+  --source android_headers="$android_headers_revision" \
   --source sysvk="$sysvk_revision" \
   --source ginkage="$ginkage_revision" \
+  --source vulkan_headers="$vulkan_headers_revision" \
+  --source wsi_headers="$wsi_headers_revision" \
+  --source vulkan_loader="$vulkan_loader_revision" \
   --patch zink-khr-vertex-attribute-divisor \
   --patch libhybris-isolated-static-tls
 ./verify-runtime.py "$stage"
@@ -82,6 +88,7 @@ Install the frontend and verifier during development:
 ```sh
 install -Dm755 udroid-gpu "$PREFIX/bin/udroid-gpu"
 install -Dm755 verify-runtime.py "$PREFIX/libexec/udroid-gpu/verify-runtime.py"
+install -Dm644 runtime_contract.py "$PREFIX/libexec/udroid-gpu/runtime_contract.py"
 ```
 
 Then install an already extracted component and launch a PRoot Distro guest:
@@ -106,6 +113,13 @@ bind the existing `/system`, `/system_ext`, `/vendor`, `/odm`, `/product`,
 
 The utility never edits `.bashrc`, `/etc/environment`, Mesa alternatives or a
 rootfs. The `system` profile executes the command without graphics overrides.
+Vendor profiles resolve one concrete Vulkan HAL, preload the patched
+`libhybris-common.so.1` followed by the AHardwareBuffer symbol wrapper, and ask
+the embedded Android linker to initialize that same HAL before application
+`main()`. Existing user preloads follow those two component libraries without
+duplicates. Ambiguous devices must provide the HAL selected by qualification
+through `UDROID_VULKAN_HAL`; the launcher never guesses between multiple
+modules.
 
 ## uDroid integration boundary
 

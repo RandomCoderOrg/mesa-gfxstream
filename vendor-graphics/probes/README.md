@@ -31,6 +31,28 @@ the CPU-wait presentation fallback.
 
 ## Vulkan XCB Present
 
+`vulkan-thread-lifecycle.c` is the no-window concurrency gate for the vendor
+bridge. The main thread and every synchronized worker must have isolated
+Android TLS before entering Vulkan. Each worker repeatedly creates an
+instance, enumerates the physical device, destroys the instance, and verifies
+that a native glibc TLS canary was not touched by the Android driver.
+
+```sh
+cc -O2 -Wall -Wextra -Werror vulkan-thread-lifecycle.c \
+  -o vulkan-thread-lifecycle -lvulkan -ldl -pthread
+
+./vulkan-thread-lifecycle 8 25
+```
+
+The packaged smoke qualification runs this as 8 threads x 25 lifecycles; full
+qualification raises it to 8 x 100. A passing report therefore proves both the
+window-system route and the libhybris TLS/pthread boundary used by ordinary
+multithreaded compositors.
+
+The probe deliberately fails when the bridge was not preloaded and qualified
+before `main()`. A pass proves 200 concurrent lifecycle operations by default;
+it does not replace the X11 presentation and long-duration compositor gates.
+
 `vulkan-xcb-present.c` creates a Vulkan XCB swapchain, clears one image red,
 presents it, and keeps the window alive briefly. It verifies the complete
 vendor Vulkan to X11 WSI path without involving Mesa, Zink, or a compositor.

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import stat
+import struct
 import sys
 from pathlib import Path
 
@@ -14,6 +15,57 @@ from runtime_contract import PROFILE_NAMES, REQUIRED_EXECUTABLES, REQUIRED_PATHS
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def minimal_aarch64_shared_object(
+    tls_bytes: int = 0x11000,
+    dynamic_tags: tuple[int, ...] = (),
+) -> bytes:
+    """Build the smallest ELF needed to exercise the offline contract parser."""
+
+    program_count = 1 + bool(dynamic_tags)
+    program_offset = 64
+    dynamic_offset = program_offset + program_count * 56
+    dynamic_size = (len(dynamic_tags) + 1) * 16 if dynamic_tags else 0
+    data = bytearray(dynamic_offset + dynamic_size)
+    identifier = b"\x7fELF" + bytes((2, 1, 1, 0, 0)) + bytes(7)
+    struct.pack_into(
+        "<16sHHIQQQIHHHHHH",
+        data,
+        0,
+        identifier,
+        3,
+        183,
+        1,
+        0,
+        program_offset,
+        0,
+        0,
+        64,
+        56,
+        program_count,
+        0,
+        0,
+        0,
+    )
+    struct.pack_into("<IIQQQQQQ", data, program_offset, 7, 4, 0, 0, 0, 0, tls_bytes, 64)
+    if dynamic_tags:
+        struct.pack_into(
+            "<IIQQQQQQ",
+            data,
+            program_offset + 56,
+            2,
+            4,
+            dynamic_offset,
+            dynamic_offset,
+            0,
+            dynamic_size,
+            dynamic_size,
+            8,
+        )
+        for index, tag in enumerate((*dynamic_tags, 0)):
+            struct.pack_into("<qQ", data, dynamic_offset + index * 16, tag, 0)
+    return bytes(data)
 
 
 class RuntimeFixture:
@@ -43,7 +95,10 @@ class RuntimeFixture:
                 content = "{}\n"
             else:
                 content = f"fixture:{relative}\n"
-            path.write_text(content, encoding="utf-8")
+            if relative == "lib/bridge/libhybris-common.so.1":
+                path.write_bytes(minimal_aarch64_shared_object())
+            else:
+                path.write_text(content, encoding="utf-8")
             path.chmod(0o755 if relative in REQUIRED_EXECUTABLES else 0o644)
 
         self.manifest = {
@@ -62,8 +117,12 @@ class RuntimeFixture:
             "sources": {
                 "mesa": "1" * 40,
                 "libhybris": "2" * 40,
-                "sysvk": "3" * 40,
-                "ginkage": "4" * 40,
+                "android_headers": "3" * 40,
+                "sysvk": "4" * 40,
+                "ginkage": "5" * 40,
+                "vulkan_headers": "6" * 40,
+                "wsi_headers": "7" * 40,
+                "vulkan_loader": "8" * 40,
             },
             "files": [],
         }

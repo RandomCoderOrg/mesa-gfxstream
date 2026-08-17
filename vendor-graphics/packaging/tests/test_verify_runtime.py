@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from runtime_fixture import RuntimeFixture
+from runtime_fixture import RuntimeFixture, minimal_aarch64_shared_object
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "verify-runtime.py"
@@ -46,6 +46,20 @@ class VerifyRuntimeTests(unittest.TestCase):
         (self.root / "bin/udroid-gpu-probe").chmod(0o644)
         self.fixture.write_metadata()
         with self.assertRaisesRegex(VERIFY_RUNTIME.VerificationError, "not executable"):
+            VERIFY_RUNTIME.verify(self.root)
+
+    def test_rejects_libhybris_without_static_tls_reserve(self) -> None:
+        path = self.root / "lib/bridge/libhybris-common.so.1"
+        path.write_bytes(minimal_aarch64_shared_object(tls_bytes=4096))
+        self.fixture.write_metadata()
+        with self.assertRaisesRegex(VERIFY_RUNTIME.VerificationError, "PT_TLS reserve"):
+            VERIFY_RUNTIME.verify(self.root)
+
+    def test_rejects_libhybris_with_runtime_search_path(self) -> None:
+        path = self.root / "lib/bridge/libhybris-common.so.1"
+        path.write_bytes(minimal_aarch64_shared_object(dynamic_tags=(29,)))
+        self.fixture.write_metadata()
+        with self.assertRaisesRegex(VERIFY_RUNTIME.VerificationError, "RPATH or RUNPATH"):
             VERIFY_RUNTIME.verify(self.root)
 
     def test_rejects_runtime_without_ahardwarebuffer_profile(self) -> None:

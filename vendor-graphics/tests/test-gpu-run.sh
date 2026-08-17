@@ -8,12 +8,15 @@ trap 'rm -rf -- "$temporary"' EXIT
 
 mkdir -p \
     "$temporary/runtime/lib/mesa/dri" \
+    "$temporary/runtime/lib/bridge" \
     "$temporary/runtime/lib/bridge/libhybris/linker" \
     "$temporary/runtime/share/vulkan/icd.d" \
     "$temporary/runtime/share/vulkan/explicit_layer.d" \
     "$temporary/xdg"
 touch \
     "$temporary/runtime/lib/mesa/dri/zink_dri.so" \
+    "$temporary/runtime/lib/bridge/libhybris-common.so.1" \
+    "$temporary/runtime/lib/bridge/libahb-wrapper.so" \
     "$temporary/runtime/lib/bridge/libhybris/linker/q.so" \
     "$temporary/runtime/share/vulkan/icd.d/sysvk.json" \
     "$temporary/runtime/share/vulkan/explicit_layer.d/VkLayer_window_system_integration.json"
@@ -30,10 +33,33 @@ grep -Fqx 'WSI_X11_AHB=1' "$temporary/environment"
 grep -Fqx 'WSI_X11_PRIVATE_CONNECTION=1' "$temporary/environment"
 grep -Fqx 'MESA_LOADER_DRIVER_OVERRIDE=zink' "$temporary/environment"
 grep -Fqx 'UDROID_VULKAN_HAL=/vendor/lib64/hw/vulkan.test.so' "$temporary/environment"
+grep -Fqx 'HYBRIS_TLS_PRELOAD=/vendor/lib64/hw/vulkan.test.so' "$temporary/environment"
+grep -Fqx "LD_PRELOAD=$temporary/runtime/lib/bridge/libhybris-common.so.1:$temporary/runtime/lib/bridge/libahb-wrapper.so" \
+    "$temporary/environment"
 grep -Fqx "HYBRIS_LINKER_DIR=$temporary/runtime/lib/bridge/libhybris/linker" \
     "$temporary/environment"
 grep -Fqx "VK_DRIVER_FILES=$temporary/runtime/share/vulkan/icd.d/sysvk.json" \
     "$temporary/environment"
+
+LD_PRELOAD=/tmp/existing-preload.so \
+UDROID_GRAPHICS_ROOT=$temporary/runtime \
+XDG_RUNTIME_DIR=$temporary/xdg \
+UDROID_VULKAN_HAL=/vendor/lib64/hw/vulkan.test.so \
+    "$runner" --profile vendor-vulkan:ginkage-ahb -- \
+    /usr/bin/env > "$temporary/environment-with-preload" 2>/dev/null
+grep -Fqx \
+    "LD_PRELOAD=$temporary/runtime/lib/bridge/libhybris-common.so.1:$temporary/runtime/lib/bridge/libahb-wrapper.so:/tmp/existing-preload.so" \
+    "$temporary/environment-with-preload"
+
+LD_PRELOAD="$temporary/runtime/lib/bridge/libahb-wrapper.so:$temporary/runtime/lib/bridge/libhybris-common.so.1:/tmp/user.so" \
+UDROID_GRAPHICS_ROOT=$temporary/runtime \
+XDG_RUNTIME_DIR=$temporary/xdg \
+UDROID_VULKAN_HAL=/vendor/lib64/hw/vulkan.test.so \
+    "$runner" --profile vendor-vulkan:ginkage-ahb -- \
+    /usr/bin/env > "$temporary/environment-with-duplicates" 2>/dev/null
+grep -Fqx \
+    "LD_PRELOAD=$temporary/runtime/lib/bridge/libhybris-common.so.1:$temporary/runtime/lib/bridge/libahb-wrapper.so:/tmp/user.so" \
+    "$temporary/environment-with-duplicates"
 
 system_result=$(
     UDROID_GRAPHICS_ROOT=$temporary/missing \
