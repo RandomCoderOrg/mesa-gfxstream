@@ -48,6 +48,20 @@ persisted, exposed as a public uDroid API, or replayed across app, renderer, or
 APEX upgrades. Only resource identity and descriptor ownership cross the Unix
 socket; frame pixels do not.
 
+`scanout-lifecycle.c` defines the next boundary independently of Android UI
+code. Complete AHB imports are cached by virtio resource ID and generation;
+outputs select resources explicitly; a resource flush presents only to an
+attached Surface generation. Replacement imports complete before an old
+generation is released, while stale flushes, destroyed resources, detached
+Surfaces, and disabled outputs cannot reach the presenter. The fixed-capacity
+tables keep the frame path allocation-free and bounded.
+
+The presenter callback has an explicit asynchronous ownership contract: when
+Android still references a queued buffer after the callback returns, the
+backend retains a separate AHB reference until its release fence completes.
+That prevents cache replacement from freeing a frame still owned by the
+display pipeline.
+
 ## Remaining display boundary
 
 Full AHB export is necessary but does not make Kumquat a display server.
