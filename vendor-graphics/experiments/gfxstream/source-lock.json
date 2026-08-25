@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "target": "android-arm64-bionic+linux-aarch64-glibc",
+  "sources": {
+    "rutabaga_gfx": {
+      "url": "https://github.com/RandomCoderOrg/rutabaga_gfx.git",
+      "revision": "ee905f00e2ea00f39cc92a29d1e4edcab33f7036",
+      "upstream": "https://github.com/magma-gpu/rutabaga_gfx.git",
+      "upstream_revision": "fb0bffc7e0429790638658cc3660f590ec4feeae"
+    },
+    "gfxstream": {
+      "url": "https://github.com/google/gfxstream.git",
+      "revision": "46d937b7fc0fe620573f59778e6e0aae30cc489e"
+    },
+    "mesa_guest": {
+      "url": "https://gitlab.freedesktop.org/mesa/mesa.git",
+      "revision": "0aba464832e3f2bae16fb47a825cdbcfa68246d4"
+    }
+  }
+}

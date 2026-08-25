@@ -37,6 +37,11 @@ vendor bridge when a writable render node exists and otherwise proposes the
 vendor Vulkan AHardwareBuffer route only when its prerequisites are visible.
 Every listed runtime probe must still pass on the current Android build.
 
+An independently selectable gfxstream/Kumquat investigation lives under
+[`experiments/gfxstream`](experiments/gfxstream/README.md). It now preserves a
+complete AHardwareBuffer across Rutabaga's C ABI, but it does not yet implement
+the scanout lifecycle required for a desktop and is not a runtime profile.
+
 ## Runtime profile
 
 The packaged `vendor-graphics/runtime/bin/udroid-gpu-run` wrapper applies the
