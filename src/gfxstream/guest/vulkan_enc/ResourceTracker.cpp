@@ -7660,6 +7660,9 @@ VkResult ResourceTracker::exportSyncFdForQSRILocked(VkImage image, int* fd) {
         exec.command = static_cast<void*>(&exportQSRI);
         exec.command_size = sizeof(exportQSRI);
         exec.flags = kFenceOut | kRingIdx;
+        if (mCaps.params[kParamFencePassing]) {
+            exec.flags |= kShareableOut;
+        }
         if (instance->execBuffer(exec, nullptr)) return VK_ERROR_OUT_OF_HOST_MEMORY;
 
         *fd = exec.handle.osHandle;
