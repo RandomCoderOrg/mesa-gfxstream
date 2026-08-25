@@ -35,6 +35,19 @@ The fork tests three simultaneous descriptors, opaque metadata preservation,
 descriptor lifetime, repeated release, non-empty output rejection, Clippy, and
 C header compilation.
 
+The integration repository adds a bounded internal process protocol in
+`ahb-info-wire.c`. One `SOCK_SEQPACKET` record carries resource ID, generation,
+all native-handle FDs through `SCM_RIGHTS`, and at most 64 KiB of opaque AOSP
+metadata. The receiver rejects truncated ancillary data, mismatched FD counts,
+unknown versions, invalid lengths, and reuse of a non-empty output object. All
+received descriptors are close-on-exec and have one explicit release owner.
+
+This is a same-device, same-build internal transport. AOSP's opaque native
+handle metadata is not a stable serialization format, so it must never be
+persisted, exposed as a public uDroid API, or replayed across app, renderer, or
+APEX upgrades. Only resource identity and descriptor ownership cross the Unix
+socket; frame pixels do not.
+
 ## Remaining display boundary
 
 Full AHB export is necessary but does not make Kumquat a display server.
