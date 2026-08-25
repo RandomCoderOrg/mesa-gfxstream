@@ -21,6 +21,7 @@ use magma_gpu::util::OwnedDescriptor;
 use magma_gpu::util::RawDescriptor;
 use magma_gpu::util::Result as MagmaGpuResult;
 use magma_gpu::util::DEFAULT_RAW_DESCRIPTOR;
+use magma_gpu::util::MAGMA_GPU_HANDLE_TYPE_SIGNAL_EVENT_FD;
 use magma_gpu::virtgpu_kumquat::defines::*;
 use magma_gpu::virtgpu_kumquat::VirtGpuKumquat;
 
@@ -94,6 +95,9 @@ type drm_kumquat_resource_import = VirtGpuResourceImport;
 
 #[expect(non_camel_case_types)]
 type drm_kumquat_resource_info = VirtGpuResourceInfo;
+
+#[expect(non_camel_case_types)]
+type drm_kumquat_resource_flush = VirtGpuResourceFlush;
 
 // SAFETY:
 // The `ptr` must be a valid pointer to a `*mut virtgpu_kumquat_ffi`.
@@ -276,6 +280,43 @@ pub unsafe extern "C" fn virtgpu_kumquat_resource_unref(
     catch_unwind(AssertUnwindSafe(|| {
         let result = ptr.lock().unwrap().resource_unref(cmd.bo_handle);
         return_result(result)
+    }))
+    .unwrap_or(-ESRCH)
+}
+
+// SAFETY:
+// `ptr` must be a valid pointer returned by `virtgpu_kumquat_init`. `cmd` must
+// be writable. A non-negative acquire fence handle transfers ownership to this
+// call. On success, a non-negative release fence handle transfers ownership to
+// the caller.
+#[no_mangle]
+pub unsafe extern "C" fn virtgpu_kumquat_resource_flush(
+    ptr: &mut virtgpu_kumquat_ffi,
+    cmd: &mut drm_kumquat_resource_flush,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        cmd.release_fence_handle = DEFAULT_RAW_DESCRIPTOR as i64;
+        let acquire_fence = if cmd.acquire_fence_handle >= 0 {
+            Some(MagmaGpuHandle {
+                // SAFETY:
+                // The caller transfers ownership of this non-negative descriptor.
+                os_handle: unsafe {
+                    OwnedDescriptor::from_raw_descriptor(cmd.acquire_fence_handle as RawDescriptor)
+                },
+                handle_type: MAGMA_GPU_HANDLE_TYPE_SIGNAL_EVENT_FD,
+            })
+        } else {
+            None
+        };
+        let result = ptr
+            .lock()
+            .unwrap()
+            .resource_flush(cmd.bo_handle, cmd.rect, acquire_fence);
+        let release_fence = return_on_error!(result);
+        if let Some(release_fence) = release_fence {
+            cmd.release_fence_handle = release_fence.os_handle.into_raw_descriptor() as i64;
+        }
+        NO_ERROR
     }))
     .unwrap_or(-ESRCH)
 }

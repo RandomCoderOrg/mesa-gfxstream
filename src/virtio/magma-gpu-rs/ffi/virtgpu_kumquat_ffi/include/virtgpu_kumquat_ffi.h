@@ -177,6 +177,23 @@ struct drm_kumquat_resource_unref {
     uint32_t pad;
 };
 
+struct drm_kumquat_rect {
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+};
+
+/* acquire_fence_handle ownership is transferred to this call when non-negative. */
+struct drm_kumquat_resource_flush {
+    uint32_t bo_handle;
+    uint32_t padding;
+    struct drm_kumquat_rect rect;
+    int64_t acquire_fence_handle;
+    /* out: caller owns this fence when non-negative. */
+    int64_t release_fence_handle;
+};
+
 #define VIRTGPU_KUMQUAT_CONTEXT_PARAM_CAPSET_ID 0x0001
 #define VIRTGPU_KUMQUAT_CONTEXT_PARAM_NUM_RINGS 0x0002
 #define VIRTGPU_KUMQUAT_CONTEXT_PARAM_POLL_RINGS_MASK 0x0003
@@ -249,6 +266,9 @@ int32_t virtgpu_kumquat_resource_create_blob(struct virtgpu_kumquat *ptr,
 
 int32_t virtgpu_kumquat_resource_unref(struct virtgpu_kumquat *ptr,
                                        struct drm_kumquat_resource_unref *cmd);
+
+int32_t virtgpu_kumquat_resource_flush(struct virtgpu_kumquat *ptr,
+                                       struct drm_kumquat_resource_flush *cmd);
 
 int32_t virtgpu_kumquat_resource_map(struct virtgpu_kumquat *ptr, struct drm_kumquat_map *cmd);
 

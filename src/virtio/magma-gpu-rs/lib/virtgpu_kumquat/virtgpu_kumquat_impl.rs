@@ -304,6 +304,44 @@ impl VirtGpuKumquat {
         Ok(())
     }
 
+    pub fn resource_flush(
+        &mut self,
+        bo_handle: u32,
+        rect: VirtGpuRect,
+        acquire_fence: Option<Handle>,
+    ) -> Result<Option<Handle>> {
+        let resource = self.resources.get(&bo_handle).ok_or(Error::Unsupported)?;
+        let resource_flush = kumquat_gpu_protocol_resource_flush {
+            hdr: kumquat_gpu_protocol_ctrl_hdr {
+                type_: KUMQUAT_GPU_PROTOCOL_RESOURCE_FLUSH,
+                ..Default::default()
+            },
+            rect,
+            resource_id: resource.resource_id,
+            padding: 0,
+        };
+
+        if let Some(acquire_fence) = acquire_fence {
+            self.stream.write(KumquatGpuProtocolWrite::CmdWithHandle(
+                resource_flush,
+                acquire_fence,
+            ))?;
+        } else {
+            self.stream
+                .write(KumquatGpuProtocolWrite::Cmd(resource_flush))?;
+        }
+        let mut protocols = self.stream.read()?;
+        match protocols.remove(0) {
+            KumquatGpuProtocol::RespNoData => Ok(None),
+            KumquatGpuProtocol::RespResourceFlush(resource_id, release_fence)
+                if resource_id == resource.resource_id =>
+            {
+                Ok(Some(release_fence))
+            }
+            _ => Err(Error::Unsupported),
+        }
+    }
+
     pub fn map(&mut self, bo_handle: u32) -> Result<MesaMapping> {
         let resource = self
             .resources
