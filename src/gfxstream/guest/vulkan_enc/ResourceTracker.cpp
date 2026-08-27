@@ -10,6 +10,7 @@
 #include "HostVisibleMemoryVirtualization.h"
 #include "Resources.h"
 #include "VkEncoder.h"
+#include "gfxstream_kumquat_present.h"
 #include "gfxstream_vk_private.h"
 #include "git_sha1.h"
 #include "goldfish_address_space.h"
@@ -25,8 +26,9 @@
 #include "vk_format_info.h"
 #include <vndk/hardware_buffer.h>
 #endif
-#include <stdlib.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -3552,6 +3554,18 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
     bool shouldPassThroughDedicatedAllocInfo =
         !exportAllocateInfoPtr && !importBufferCollectionInfoPtr && !importVmoInfoPtr;
 
+#if defined(LINUX_GUEST_BUILD)
+    // A Linux DMA-BUF export can be backed by an Android AHardwareBuffer when
+    // the virtgpu transport runs against an Android gfxstream host. AHB image
+    // imports require VkMemoryDedicatedAllocateInfo, so preserve the guest's
+    // dedicated image relationship across the wire. Native Linux hosts may
+    // ignore it, while Android drivers need it to validate the AHB import.
+    if (exportAllocateInfoPtr &&
+        (exportAllocateInfoPtr->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)) {
+        shouldPassThroughDedicatedAllocInfo = !importBufferCollectionInfoPtr && !importVmoInfoPtr;
+    }
+#endif
+
     const VkPhysicalDeviceMemoryProperties& physicalDeviceMemoryProps =
         getPhysicalDeviceMemoryProperties(context, device, VK_NULL_HANDLE);
 
@@ -4010,28 +4024,6 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
                 imageCreateInfo = imageInfo.createInfo;
             }
 
-            // Need to query the stride of the underyling image resource
-            // (VkSubresourceLayout::rowPitch) In most cases, the application will have created the
-            // VkImage w/ VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT, in which case the aspectMask to
-            // query is the PLANE_0_BIT resource. Otherwise, query the more generic COLOR_BIT.
-            // Note: For VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT, the image may actually be emulated
-            // with VK_IMAGE_TILING_LINEAR.
-            const VkImageSubresource imageSubresource = {
-                .aspectMask = (imageCreateInfo.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
-                                  ? VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT
-                                  : VK_IMAGE_ASPECT_COLOR_BIT,
-                .mipLevel = 0,
-                .arrayLayer = 0,
-            };
-            VkSubresourceLayout subResourceLayout;
-            enc->vkGetImageSubresourceLayout(device, dedicatedAllocInfoPtr->image,
-                                             &imageSubresource, &subResourceLayout,
-                                             true /* do lock */);
-            if (!subResourceLayout.rowPitch) {
-                mesa_loge("Failed to query stride for VirtGpu resource creation.");
-                return VK_ERROR_INITIALIZATION_FAILED;
-            }
-
             uint32_t virglFormat = gfxstream::vk::getVirglFormat(imageCreateInfo.format);
             if (!virglFormat) {
                 mesa_loge("Unsupported VK format for VirtGpu resource, vkFormat: 0x%x",
@@ -4080,11 +4072,15 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
                     return VK_ERROR_OUT_OF_HOST_MEMORY;
                 }
             } else {
-                bufferBlob = instance->createResource(
-                    imageCreateInfo.extent.width, imageCreateInfo.extent.height,
-                    subResourceLayout.rowPitch,
-                    subResourceLayout.rowPitch * imageCreateInfo.extent.height, virglFormat, target,
-                    bind);
+                // getVirglFormat() accepts only packed 32-bit color formats. Describe the
+                // virtual transport resource using that format contract instead of querying the
+                // host VkImage's private layout. The latter is invalid for optimal tiling and is
+                // not the layout exported through VirtGpu in any case.
+                const uint32_t rowPitch = imageCreateInfo.extent.width * 4;
+                const uint32_t resourceSize = rowPitch * imageCreateInfo.extent.height;
+                bufferBlob = instance->createResource(imageCreateInfo.extent.width,
+                                                      imageCreateInfo.extent.height, rowPitch,
+                                                      resourceSize, virglFormat, target, bind);
                 if (!bufferBlob) {
                     mesa_loge("Failed to create colorBuffer resource for Image memory");
                     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -5630,7 +5626,15 @@ VkResult ResourceTracker::on_vkBindImageMemory(void* context, VkResult, VkDevice
         info_VkImage.find(image) == info_VkImage.end()) {
         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     }
-    return enc->vkBindImageMemory(device, image, memory, memoryOffset, true /* do lock */);
+    const VkResult result =
+        enc->vkBindImageMemory(device, image, memory, memoryOffset, true /* do lock */);
+    if (result == VK_SUCCESS) {
+        std::lock_guard<std::recursive_mutex> lock(mLock);
+        auto& imageInfo = info_VkImage.at(image);
+        imageInfo.currentBacking = memory;
+        imageInfo.currentBackingOffset = memoryOffset;
+    }
+    return result;
 }
 
 VkResult ResourceTracker::on_vkBindImageMemory2(void* context, VkResult, VkDevice device,
@@ -5658,7 +5662,18 @@ VkResult ResourceTracker::on_vkBindImageMemory2(void* context, VkResult, VkDevic
         }
     }
 
-    return enc->vkBindImageMemory2(device, bindingCount, pBindInfos, true /* do lock */);
+    const VkResult result =
+        enc->vkBindImageMemory2(device, bindingCount, pBindInfos, true /* do lock */);
+    if (result == VK_SUCCESS) {
+        std::lock_guard<std::recursive_mutex> lock(mLock);
+        for (uint32_t i = 0; i < bindingCount; i++) {
+            const VkBindImageMemoryInfo& bindInfo = pBindInfos[i];
+            auto& imageInfo = info_VkImage.at(bindInfo.image);
+            imageInfo.currentBacking = bindInfo.memory;
+            imageInfo.currentBackingOffset = bindInfo.memoryOffset;
+        }
+    }
+    return result;
 }
 
 VkResult ResourceTracker::on_vkCreateBuffer(void* context, VkResult, VkDevice device,
@@ -7825,6 +7840,40 @@ VkResult ResourceTracker::on_vkCreateGraphicsPipelines(
                                           true /* do lock */);
 }
 
+VkResult ResourceTracker::presentImageToKumquat(VkImage image, int acquireFenceFd,
+                                                int* releaseFenceFd) {
+    if (releaseFenceFd) *releaseFenceFd = -1;
+    if (acquireFenceFd < 0 || !releaseFenceFd) {
+        if (acquireFenceFd >= 0) close(acquireFenceFd);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    VirtGpuResourcePtr resource;
+    VkExtent3D extent{};
+    {
+        std::lock_guard<std::recursive_mutex> lock(mLock);
+        const auto imageIt = info_VkImage.find(image);
+        if (imageIt == info_VkImage.end() || imageIt->second.currentBacking == VK_NULL_HANDLE) {
+            close(acquireFenceFd);
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        const auto memoryIt = info_VkDeviceMemory.find(imageIt->second.currentBacking);
+        if (memoryIt == info_VkDeviceMemory.end() || !memoryIt->second.blobPtr) {
+            close(acquireFenceFd);
+            return VK_ERROR_MEMORY_MAP_FAILED;
+        }
+        resource = memoryIt->second.blobPtr;
+        extent = imageIt->second.createInfo.extent;
+    }
+
+    // The presenter waits for Android's release fence. Do not hold the global
+    // Vulkan object lock across that blocking IPC or unrelated Vulkan calls
+    // from other application threads can deadlock behind presentation.
+    const int ret =
+        resource->present(0, 0, extent.width, extent.height, acquireFenceFd, releaseFenceFd);
+    return ret == 0 ? VK_SUCCESS : VK_ERROR_DEVICE_LOST;
+}
+
 uint32_t ResourceTracker::getApiVersionFromInstance(VkInstance instance) {
     std::lock_guard<std::recursive_mutex> lock(mLock);
     uint32_t api = kDefaultApiVersion;
@@ -8085,3 +8134,9 @@ LIST_TRIVIAL_TRANSFORMED_TYPES(DEFINE_TRANSFORMED_TYPE_IMPL)
 
 }  // namespace vk
 }  // namespace gfxstream
+
+extern "C" __attribute__((visibility("default"))) VkResult
+gfxstream_kumquat_present_image(VkImage image, int acquireFenceFd, int* releaseFenceFd) {
+    return gfxstream::vk::ResourceTracker::get()->presentImageToKumquat(image, acquireFenceFd,
+                                                                        releaseFenceFd);
+}

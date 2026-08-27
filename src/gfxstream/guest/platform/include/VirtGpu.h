@@ -5,11 +5,12 @@
 #ifndef VIRTGPU_DEVICE_H
 #define VIRTGPU_DEVICE_H
 
+#include <cerrno>
 #include <cstdint>
 #include <memory>
 
-#include "virtio/virtio-gpu/virtgpu_gfxstream_protocol.h"
 #include "virtio/virtio-gpu/virgl_hw.h"
+#include "virtio/virtio-gpu/virtgpu_gfxstream_protocol.h"
 
 #define PIPE_BUFFER 0
 #define PIPE_TEXTURE_2D 2
@@ -163,6 +164,10 @@ class VirtGpuResource {
     virtual int transferToHost(uint32_t offset, uint32_t size) {
         return transferToHost(offset, 0, size, 1);
     }
+
+    // Optional window-system handoff. Ownership of a non-negative acquire fence transfers to the
+    // implementation. On success, ownership of a non-negative release fence transfers back.
+    virtual int present(uint32_t, uint32_t, uint32_t, uint32_t, int, int*) { return -ENOTSUP; }
 };
 
 class VirtGpuResourceMapping {

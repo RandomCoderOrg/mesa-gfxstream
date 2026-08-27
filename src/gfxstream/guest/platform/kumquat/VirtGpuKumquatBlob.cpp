@@ -162,3 +162,28 @@ int VirtGpuKumquatResource::transferFromHost(uint32_t x, uint32_t y, uint32_t w,
 
     return 0;
 }
+
+int VirtGpuKumquatResource::present(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                                    int acquireFenceFd, int* releaseFenceFd) {
+    if (!releaseFenceFd || acquireFenceFd < 0) {
+        if (acquireFenceFd >= 0) close(acquireFenceFd);
+        return -EINVAL;
+    }
+
+    struct drm_kumquat_resource_flush flush = {
+        .bo_handle = mBlobHandle,
+        .padding = 0,
+        .rect = {.x = x, .y = y, .width = width, .height = height},
+        .acquire_fence_handle = acquireFenceFd,
+        .release_fence_handle = -1,
+    };
+    const int ret = virtgpu_kumquat_resource_flush(mVirtGpu, &flush);
+    if (ret) {
+        mesa_loge("Present failed with %s for resource %u blob %u", strerror(-ret), mResourceHandle,
+                  mBlobHandle);
+        return ret;
+    }
+
+    *releaseFenceFd = static_cast<int>(flush.release_fence_handle);
+    return 0;
+}

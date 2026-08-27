@@ -124,6 +124,8 @@ class ResourceTracker {
     ~ResourceTracker();
     static ResourceTracker* get();
 
+    VkResult presentImageToKumquat(VkImage image, int acquireFenceFd, int* releaseFenceFd);
+
     VulkanHandleMapping* createMapping();
     VulkanHandleMapping* destroyMapping();
 
