@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -184,6 +185,11 @@ int main(int argc, char** argv) {
 
 #define LOAD_DEVICE(name) auto name = device_proc<PFN_##name>(getDeviceProc, device, #name)
     LOAD_DEVICE(vkGetDeviceQueue);
+    LOAD_DEVICE(vkCreateBuffer);
+    LOAD_DEVICE(vkGetBufferMemoryRequirements);
+    LOAD_DEVICE(vkBindBufferMemory);
+    LOAD_DEVICE(vkGetMemoryFdKHR);
+    LOAD_DEVICE(vkDestroyBuffer);
     LOAD_DEVICE(vkCreateImage);
     LOAD_DEVICE(vkGetImageMemoryRequirements);
     LOAD_DEVICE(vkAllocateMemory);
@@ -208,6 +214,83 @@ int main(int argc, char** argv) {
 
     VkQueue queue = VK_NULL_HANDLE;
     vkGetDeviceQueue(device, queueFamily, 0, &queue);
+    VkPhysicalDeviceMemoryProperties memoryProperties = {};
+    getPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+
+    if (std::getenv("UDROID_GFXSTREAM_BUFFER_EXPORT_ONLY")) {
+        const VkExternalMemoryBufferCreateInfo externalBufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        };
+        const VkBufferCreateInfo bufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = &externalBufferInfo,
+            .size = 320 * 240 * 4,
+            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        VkBuffer buffer = VK_NULL_HANDLE;
+        stage("vkCreateBuffer(external DMA-BUF)");
+        if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
+            fail("vkCreateBuffer");
+        }
+
+        VkMemoryRequirements bufferMemoryRequirements = {};
+        vkGetBufferMemoryRequirements(device, buffer, &bufferMemoryRequirements);
+        uint32_t bufferMemoryType = UINT32_MAX;
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+            if (bufferMemoryRequirements.memoryTypeBits & (1u << i)) {
+                bufferMemoryType = i;
+                break;
+            }
+        }
+        if (bufferMemoryType == UINT32_MAX) fail("buffer memory type");
+
+        const VkMemoryDedicatedAllocateInfo bufferDedicatedInfo = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+            .buffer = buffer,
+        };
+        const VkExportMemoryAllocateInfo bufferExportInfo = {
+            .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+            .pNext = &bufferDedicatedInfo,
+            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        };
+        const VkMemoryAllocateInfo bufferAllocationInfo = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = &bufferExportInfo,
+            .allocationSize = bufferMemoryRequirements.size,
+            .memoryTypeIndex = bufferMemoryType,
+        };
+        VkDeviceMemory bufferMemory = VK_NULL_HANDLE;
+        stage("vkAllocateMemory(export buffer DMA-BUF)");
+        result = vkAllocateMemory(device, &bufferAllocationInfo, nullptr, &bufferMemory);
+        if (result != VK_SUCCESS) fail("vkAllocateMemory(buffer)", result);
+        if (vkBindBufferMemory(device, buffer, bufferMemory, 0) != VK_SUCCESS) {
+            fail("vkBindBufferMemory");
+        }
+
+        const VkMemoryGetFdInfoKHR fdInfo = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+            .memory = bufferMemory,
+            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        };
+        int dmaBuf = -1;
+        result = vkGetMemoryFdKHR(device, &fdInfo, &dmaBuf);
+        if (result != VK_SUCCESS || dmaBuf < 0) fail("vkGetMemoryFdKHR(buffer)", result);
+        std::printf("[pass] exported dedicated Vulkan buffer as DMA-BUF fd=%d size=%" PRIu64
+                    "\n",
+                    dmaBuf, static_cast<uint64_t>(bufferMemoryRequirements.size));
+        close(dmaBuf);
+        vkDestroyBuffer(device, buffer, nullptr);
+        vkFreeMemory(device, bufferMemory, nullptr);
+        vkDestroyDevice(device, nullptr);
+        auto destroyInstance =
+            instance_proc<PFN_vkDestroyInstance>(getInstanceProc, instance, "vkDestroyInstance");
+        destroyInstance(instance, nullptr);
+        dlclose(library);
+        return 0;
+    }
+
     const VkExtent3D extent = {.width = 720, .height = 1280, .depth = 1};
     const VkExternalMemoryImageCreateInfo externalImageInfo = {
         .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
@@ -233,8 +316,6 @@ int main(int argc, char** argv) {
 
     VkMemoryRequirements memoryRequirements = {};
     vkGetImageMemoryRequirements(device, image, &memoryRequirements);
-    VkPhysicalDeviceMemoryProperties memoryProperties = {};
-    getPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
     uint32_t memoryType = UINT32_MAX;
     for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
         if (memoryRequirements.memoryTypeBits & (1u << i)) {
