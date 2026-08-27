@@ -22,10 +22,20 @@ VkResult gfxstream_vk_wsi_init(struct gfxstream_vk_physical_device* physical_dev
         gfxstream_vk_wsi_proc_addr, &physical_device->instance->vk.alloc, -1, NULL, &options);
     if (result != VK_SUCCESS) return result;
 
-    // Allow guest-side modifier code paths
-    physical_device->wsi_device.supports_modifiers = true;
-    // Support wsi_image_create_info::scanout
-    physical_device->wsi_device.supports_scanout = true;
+    // Gfxstream exports image-backed DMA-BUFs but does not expose native DRM
+    // format modifiers to the guest WSI.
+    physical_device->wsi_device.supports_modifiers = false;
+    // Standard X11 DRI3 requires BGRA scanout, while Android AHardwareBuffer
+    // export is not universally available for that format. Use common WSI's
+    // linear buffer-blit fallback until the private AHB transport is selected.
+    physical_device->wsi_device.supports_scanout = false;
+
+    // The generic dma-buf sync-file capability probe allocates anonymous
+    // exportable memory. Gfxstream can export only image- or buffer-backed
+    // resources, so reject that probe up front and let common WSI use the
+    // image-backed implicit-sync path.
+    physical_device->wsi_device.semaphore_export_handle_types &=
+        ~VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
 
     physical_device->vk.wsi_device = &physical_device->wsi_device;
 
