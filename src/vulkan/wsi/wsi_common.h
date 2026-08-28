@@ -133,6 +133,19 @@ struct wsi_device {
       /* adds an extra minImageCount when running under xwayland */
       bool extra_xwayland_image;
 
+      /* Optional Android bridge used by socket-based X servers. It sends the
+       * AHardwareBuffer backing memory to an already-connected Unix socket. */
+      VkResult (*send_memory_ahb_to_socket)(VkDevice device,
+                                            VkDeviceMemory memory,
+                                            int socket_fd);
+      VkResult (*sync_image_from_host)(VkDevice device,
+                                       VkDeviceMemory memory,
+                                       uint32_t width,
+                                       uint32_t height);
+      /* Images exported as Android hardware buffers need a Vulkan queue-family
+       * release before an external EGL consumer samples them. */
+      bool needs_external_image_ownership;
+
       /* Never report VK_SUBOPTIMAL_KHR. Used to workaround
        * games that cannot handle SUBOPTIMAL correctly. */
       bool ignore_suboptimal;

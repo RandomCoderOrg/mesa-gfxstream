@@ -41,15 +41,102 @@
 #include "vk_util.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <inttypes.h>
 #include <time.h>
 #include <stdlib.h>
 #include <stdio.h>
 
 #ifndef _WIN32
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 uint64_t WSI_DEBUG;
+
+#ifndef _WIN32
+static void
+wsi_debug_dump_present_buffer(const struct wsi_swapchain *swapchain,
+                              const struct wsi_image *image)
+{
+   if (!debug_get_bool_option("UDROID_GFXSTREAM_WSI_DUMP", false))
+      return;
+
+   static unsigned dump_count;
+   const unsigned sequence = __atomic_fetch_add(&dump_count, 1, __ATOMIC_RELAXED);
+   if (sequence >= 8)
+      return;
+
+   size_t size = image->sizes[0];
+   if (size == 0 && image->row_pitches[0] != 0)
+      size = (size_t)image->row_pitches[0] *
+             swapchain->image_info.create.extent.height;
+   if (image->dma_buf_fd >= 0) {
+      struct stat stat_buffer;
+      if (fstat(image->dma_buf_fd, &stat_buffer) == 0 && stat_buffer.st_size > 0 &&
+          (size == 0 || (size_t)stat_buffer.st_size < size))
+         size = stat_buffer.st_size;
+   }
+   if (size == 0) {
+      fprintf(stderr, "UDROID_WSI_BUFFER sequence=%u zero_size\n", sequence);
+      return;
+   }
+   void *mapping = image->cpu_map;
+   bool mapped_here = false;
+   if (!mapping && image->dma_buf_fd >= 0) {
+      mapping = mmap(NULL, size, PROT_READ, MAP_SHARED, image->dma_buf_fd, 0);
+      if (mapping == MAP_FAILED) {
+         fprintf(stderr,
+                 "UDROID_WSI_BUFFER sequence=%u fd=%d mmap_errno=%d\n",
+                 sequence, image->dma_buf_fd, errno);
+         return;
+      }
+      mapped_here = true;
+   }
+
+   if (!mapping) {
+      fprintf(stderr, "UDROID_WSI_BUFFER sequence=%u no_mapping\n", sequence);
+      return;
+   }
+
+   struct dma_buf_sync sync = {
+      .flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ,
+   };
+   const int sync_start = image->dma_buf_fd >= 0
+      ? ioctl(image->dma_buf_fd, DMA_BUF_IOCTL_SYNC, &sync) : 0;
+   const int sync_start_errno = sync_start == 0 ? 0 : errno;
+
+   const uint8_t *bytes = mapping;
+   uint64_t hash = 1469598103934665603ull;
+   size_t nonzero = 0;
+   uint8_t minimum = UINT8_MAX;
+   uint8_t maximum = 0;
+   for (size_t i = 0; i < size; i++) {
+      const uint8_t value = bytes[i];
+      nonzero += value != 0;
+      minimum = MIN2(minimum, value);
+      maximum = MAX2(maximum, value);
+      hash = (hash ^ value) * 1099511628211ull;
+   }
+
+   fprintf(stderr,
+           "UDROID_WSI_BUFFER sequence=%u fd=%d size=%zu stride=%u "
+           "nonzero=%zu min=%u max=%u hash=%016" PRIx64
+           " first=%02x%02x%02x%02x sync_start=%d sync_errno=%d\n",
+           sequence, image->dma_buf_fd, size, image->row_pitches[0], nonzero,
+           minimum, maximum, hash, bytes[0], bytes[1], bytes[2], bytes[3],
+           sync_start, sync_start_errno);
+
+   sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+   if (image->dma_buf_fd >= 0)
+      ioctl(image->dma_buf_fd, DMA_BUF_IOCTL_SYNC, &sync);
+   if (mapped_here)
+      munmap(mapping, size);
+}
+#endif
 
 static const struct debug_control debug_control[] = {
    { "buffer",       WSI_DEBUG_BUFFER },
@@ -514,6 +601,7 @@ wsi_swapchain_init(const struct wsi_device *wsi,
 
    chain->blit.queue = NULL;
    if (chain->blit.type != WSI_SWAPCHAIN_NO_BLIT ||
+       wsi->x11.needs_external_image_ownership ||
        (pCreateInfo->flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) ||
        device->enabled_extensions.GOOGLE_display_timing) {
 
@@ -892,22 +980,97 @@ wsi_create_image(const struct wsi_swapchain *chain,
 
    result = wsi->CreateImage(chain->device, &info->create,
                              &chain->alloc, &image->image);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "UDROID_WSI_CREATE_IMAGE step=create_image result=%d format=%d %ux%u\n",
+              result, info->create.format, info->create.extent.width,
+              info->create.extent.height);
       goto fail;
+   }
 
    result = info->create_mem(chain, info, image);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "UDROID_WSI_CREATE_IMAGE step=create_mem result=%d image=%p\n",
+              result, (void *)(uintptr_t)image->image);
       goto fail;
+   }
 
    result = wsi->BindImageMemory(chain->device, image->image,
                                  image->memory, 0);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "UDROID_WSI_CREATE_IMAGE step=bind result=%d image=%p memory=%p\n",
+              result, (void *)(uintptr_t)image->image,
+              (void *)(uintptr_t)image->memory);
       goto fail;
+   }
 
    if (info->finish_create) {
       result = info->finish_create(chain, info, image);
-      if (result != VK_SUCCESS)
+      if (result != VK_SUCCESS) {
+         fprintf(stderr, "UDROID_WSI_CREATE_IMAGE step=finish result=%d image=%p\n",
+                 result, (void *)(uintptr_t)image->image);
          goto fail;
+      }
+   }
+
+   if (wsi->x11.needs_external_image_ownership) {
+      const uint32_t family_count = wsi->queue_family_count;
+      image->external_release_cmd_buffers =
+         vk_zalloc(&chain->alloc, sizeof(VkCommandBuffer) * family_count, 8,
+                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!image->external_release_cmd_buffers) {
+         result = VK_ERROR_OUT_OF_HOST_MEMORY;
+         goto fail;
+      }
+
+      for (uint32_t i = 0; i < family_count; i++) {
+         if (!chain->cmd_pools[i])
+            continue;
+
+         const VkCommandBufferAllocateInfo alloc_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = chain->cmd_pools[i],
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+         };
+         result = wsi->AllocateCommandBuffers(
+            chain->device, &alloc_info, &image->external_release_cmd_buffers[i]);
+         if (result != VK_SUCCESS)
+            goto fail;
+
+         const VkCommandBufferBeginInfo begin_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
+         };
+         result = wsi->BeginCommandBuffer(image->external_release_cmd_buffers[i],
+                                          &begin_info);
+         if (result != VK_SUCCESS)
+            goto fail;
+
+         const VkImageMemoryBarrier barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex = i,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL,
+            .image = image->image,
+            .subresourceRange = {
+               .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+               .baseMipLevel = 0,
+               .levelCount = 1,
+               .baseArrayLayer = 0,
+               .layerCount = 1,
+            },
+         };
+         wsi->CmdPipelineBarrier(image->external_release_cmd_buffers[i],
+                                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                                 NULL, 1, &barrier);
+         result = wsi->EndCommandBuffer(image->external_release_cmd_buffers[i]);
+         if (result != VK_SUCCESS)
+            goto fail;
+      }
    }
 
    if (info->explicit_sync) {
@@ -1061,6 +1224,16 @@ wsi_destroy_image(const struct wsi_swapchain *chain,
          }
       }
       vk_free(&chain->alloc, image->timestamp_cmd_buffers);
+   }
+
+   if (image->external_release_cmd_buffers) {
+      for (uint32_t i = 0; i < wsi->queue_family_count; i++) {
+         if (image->external_release_cmd_buffers[i]) {
+            wsi->FreeCommandBuffers(chain->device, chain->cmd_pools[i], 1,
+                                    &image->external_release_cmd_buffers[i]);
+         }
+      }
+      vk_free(&chain->alloc, image->external_release_cmd_buffers);
    }
 
    wsi->FreeMemory(chain->device, image->memory, &chain->alloc);
@@ -2683,7 +2856,7 @@ wsi_common_queue_present(const struct wsi_device *wsi,
     */
    {
       STACK_ARRAY(VkCommandBufferSubmitInfo, command_buffer_infos,
-                  pPresentInfo->swapchainCount * 2);
+                  pPresentInfo->swapchainCount * 3);
       STACK_ARRAY(VkSemaphoreSubmitInfo, signal_semaphore_infos,
                   pPresentInfo->swapchainCount *
                   ARRAY_SIZE(image_signal_infos[0].semaphore_infos));
@@ -2755,6 +2928,14 @@ wsi_common_queue_present(const struct wsi_device *wsi,
             command_buffer_infos[command_buffer_count++] = (VkCommandBufferSubmitInfo) {
                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
                .commandBuffer = image->timestamp_cmd_buffers[queue->queue_family_index],
+            };
+         }
+
+         if (image->external_release_cmd_buffers) {
+            command_buffer_infos[command_buffer_count++] = (VkCommandBufferSubmitInfo) {
+               .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+               .commandBuffer =
+                  image->external_release_cmd_buffers[queue->queue_family_index],
             };
          }
       }
@@ -2879,10 +3060,34 @@ wsi_common_queue_present(const struct wsi_device *wsi,
 #endif
       }
 
-      if (wsi->sw) {
-         wsi->WaitForFences(vk_device_to_handle(dev),
-                            1, &swapchain->fences[image_index], true, ~0ull);
+      const bool force_present_wait =
+         (swapchain->blit.type == WSI_SWAPCHAIN_BUFFER_BLIT ||
+          wsi->x11.send_memory_ahb_to_socket) &&
+         debug_get_bool_option("UDROID_GFXSTREAM_WSI_WAIT", false);
+      if (wsi->sw || force_present_wait) {
+         results[i] = wsi->WaitForFences(vk_device_to_handle(dev),
+                                         1, &swapchain->fences[image_index],
+                                         true, ~0ull);
+         if (results[i] != VK_SUCCESS)
+            continue;
       }
+
+#ifndef _WIN32
+      if (debug_get_bool_option("UDROID_GFXSTREAM_WSI_DUMP", false) &&
+          wsi->x11.sync_image_from_host) {
+         results[i] = wsi->x11.sync_image_from_host(
+            vk_device_to_handle(dev), image->memory,
+            swapchain->image_info.create.extent.width,
+            swapchain->image_info.create.extent.height);
+         if (results[i] != VK_SUCCESS) {
+            fprintf(stderr, "UDROID_WSI_IMAGE_SYNC result=%d\n", results[i]);
+            continue;
+         }
+      }
+      if (swapchain->blit.type == WSI_SWAPCHAIN_BUFFER_BLIT ||
+          wsi->x11.send_memory_ahb_to_socket)
+         wsi_debug_dump_present_buffer(swapchain, image);
+#endif
 
       const VkPresentRegionKHR *region = NULL;
       if (regions && regions->pRegions)

@@ -194,6 +194,7 @@ struct wsi_image {
 
    VkQueryPool query_pool;
    VkCommandBuffer *timestamp_cmd_buffers;
+   VkCommandBuffer *external_release_cmd_buffers;
    uint32_t query_pool_busy;
 };
 

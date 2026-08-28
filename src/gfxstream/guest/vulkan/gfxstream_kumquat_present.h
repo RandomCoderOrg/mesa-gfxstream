@@ -21,6 +21,16 @@ extern "C" {
 VKAPI_ATTR VkResult VKAPI_CALL gfxstream_kumquat_present_image(VkImage image, int acquireFenceFd,
                                                                int* releaseFenceFd);
 
+/* Development probe for host-to-guest coherence of an exported Kumquat resource. */
+VKAPI_ATTR VkResult VKAPI_CALL
+gfxstream_kumquat_sync_memory_from_host(VkDeviceMemory memory, uint64_t size);
+
+VKAPI_ATTR VkResult VKAPI_CALL gfxstream_kumquat_sync_image_from_host(
+    VkDeviceMemory memory, uint32_t width, uint32_t height);
+
+VKAPI_ATTR VkResult VKAPI_CALL
+gfxstream_kumquat_send_memory_ahb_to_socket(VkDeviceMemory memory, int socketFd);
+
 #ifdef __cplusplus
 }
 #endif

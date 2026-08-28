@@ -571,6 +571,11 @@ get_modifier_props(const struct wsi_image_info *info, uint64_t modifier)
 }
 
 static VkResult
+wsi_finish_create_ahb_native_image(const struct wsi_swapchain *chain,
+                                   const struct wsi_image_info *info,
+                                   struct wsi_image *image);
+
+static VkResult
 wsi_create_native_image_mem(const struct wsi_swapchain *chain,
                             const struct wsi_image_info *info,
                             struct wsi_image *image);
@@ -730,7 +735,15 @@ wsi_configure_native_image(const struct wsi_swapchain *chain,
       }
    }
 
+   /* Socket-based Android X servers import the resource's AHardwareBuffer.
+    * Keep the exported image linear so its public row pitch and offset match
+    * the DRI3 pixmap metadata sent by the X11 backend. */
+   if (wsi->x11.send_memory_ahb_to_socket)
+      info->create.tiling = VK_IMAGE_TILING_LINEAR;
+
    info->create_mem = wsi_create_native_image_mem;
+   if (wsi->x11.send_memory_ahb_to_socket)
+      info->finish_create = wsi_finish_create_ahb_native_image;
 
    return VK_SUCCESS;
 
@@ -796,12 +809,32 @@ wsi_create_native_image_mem(const struct wsi_swapchain *chain,
    };
    result = wsi->AllocateMemory(chain->device, &memory_info,
                                 &chain->alloc, &image->memory);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      fprintf(stderr,
+              "UDROID_WSI_NATIVE_MEMORY step=allocate result=%d size=%llu type=%u\n",
+              result, (unsigned long long)memory_info.allocationSize,
+              memory_info.memoryTypeIndex);
       return result;
+   }
 
    result = wsi_init_image_dmabuf_fd(chain, image, false);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      fprintf(stderr,
+              "UDROID_WSI_NATIVE_MEMORY step=get_dmabuf result=%d memory=%p\n",
+              result, (void *)(uintptr_t)image->memory);
       return result;
+   }
+
+   /* The gfxstream X11 transport exports this allocation as an Android
+    * hardware buffer.  Vulkan requires AHB-backed images to be bound before
+    * querying their subresource layout, while wsi_create_image() binds only
+    * after create_mem returns.  Defer the query to finish_create instead. */
+   if (wsi->x11.send_memory_ahb_to_socket) {
+      image->drm_modifier = DRM_FORMAT_MOD_INVALID;
+      image->num_planes = 1;
+      image->sizes[0] = reqs.size;
+      return VK_SUCCESS;
+   }
 
    if (info->drm_mod_list.drmFormatModifierCount > 0) {
       VkImageDrmFormatModifierPropertiesEXT image_mod_props = {
@@ -849,6 +882,27 @@ wsi_create_native_image_mem(const struct wsi_swapchain *chain,
       image->row_pitches[0] = image_layout.rowPitch;
       image->offsets[0] = 0;
    }
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+wsi_finish_create_ahb_native_image(const struct wsi_swapchain *chain,
+                                   UNUSED const struct wsi_image_info *info,
+                                   struct wsi_image *image)
+{
+   const struct wsi_device *wsi = chain->wsi;
+   const VkImageSubresource image_subresource = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .mipLevel = 0,
+      .arrayLayer = 0,
+   };
+   VkSubresourceLayout image_layout;
+
+   wsi->GetImageSubresourceLayout(chain->device, image->image,
+                                  &image_subresource, &image_layout);
+   image->row_pitches[0] = image_layout.rowPitch;
+   image->offsets[0] = image_layout.offset;
 
    return VK_SUCCESS;
 }

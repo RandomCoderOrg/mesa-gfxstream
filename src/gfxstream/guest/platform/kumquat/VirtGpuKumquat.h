@@ -30,6 +30,7 @@ class VirtGpuKumquatResource : public std::enable_shared_from_this<VirtGpuKumqua
     int transferToHost(uint32_t x, uint32_t y, uint32_t w, uint32_t h) override;
     int present(uint32_t x, uint32_t y, uint32_t width, uint32_t height, int acquireFenceFd,
                 int* releaseFenceFd) override;
+    int sendHardwareBuffer(int socketFd) override;
 
    private:
     // Not owned.  Really should use a ScopedFD for this, but doesn't matter since we have a

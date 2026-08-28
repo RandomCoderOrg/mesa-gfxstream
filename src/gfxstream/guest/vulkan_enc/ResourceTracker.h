@@ -125,6 +125,9 @@ class ResourceTracker {
     static ResourceTracker* get();
 
     VkResult presentImageToKumquat(VkImage image, int acquireFenceFd, int* releaseFenceFd);
+    VkResult syncMemoryFromKumquat(VkDeviceMemory memory, uint64_t size);
+    VkResult syncImageFromKumquat(VkDeviceMemory memory, uint32_t width, uint32_t height);
+    VkResult sendMemoryAhbToSocket(VkDeviceMemory memory, int socketFd);
 
     VulkanHandleMapping* createMapping();
     VulkanHandleMapping* destroyMapping();

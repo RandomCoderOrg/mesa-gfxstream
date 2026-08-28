@@ -3572,9 +3572,21 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
     const bool requestedMemoryIsHostVisible =
         isHostVisible(&physicalDeviceMemoryProps, pAllocateInfo->memoryTypeIndex);
 
-#if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+#if defined(LINUX_GUEST_BUILD)
+    const bool linuxDmabufImageExport =
+        exportAllocateInfoPtr && dedicatedAllocInfoPtr &&
+        dedicatedAllocInfoPtr->image != VK_NULL_HANDLE &&
+        (exportAllocateInfoPtr->handleTypes &
+         VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+    // The virtual memory type used by the Kumquat resource may be host-visible,
+    // but the Android host imports its ColorBuffer AHardwareBuffer into the
+    // dedicated guest image. Do not let the generic host-visible-memory rule
+    // strip the image relationship required by the AHB Vulkan contract.
+    shouldPassThroughDedicatedAllocInfo &=
+        linuxDmabufImageExport || !requestedMemoryIsHostVisible;
+#elif defined(VK_USE_PLATFORM_ANDROID_KHR)
     shouldPassThroughDedicatedAllocInfo &= !requestedMemoryIsHostVisible;
-#endif  // VK_USE_PLATFORM_FUCHSIA
+#endif
 
     if (shouldPassThroughDedicatedAllocInfo && dedicatedAllocInfoPtr) {
         dedicatedAllocInfo = vk_make_orphan_copy(*dedicatedAllocInfoPtr);
@@ -4033,6 +4045,18 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
             const uint32_t target = PIPE_TEXTURE_2D;
             uint32_t bind = VIRGL_BIND_RENDER_TARGET;
 
+            // Exported native images may legitimately reach the WSI with a zero
+            // allocation size: their storage requirements are intrinsic to the
+            // native image rather than supplied by the application.  The
+            // VirtGpu transport still needs a concrete resource size, and the
+            // encoded host allocation must not retain the zero placeholder.
+            // The transport currently accepts only packed 32-bit color formats,
+            // so its tightly packed size is unambiguous here.
+            const uint32_t rowPitch = imageCreateInfo.extent.width * 4;
+            const uint32_t resourceSize = rowPitch * imageCreateInfo.extent.height;
+            if (finalAllocInfo.allocationSize == 0) {
+                finalAllocInfo.allocationSize = resourceSize;
+            }
             if (mCaps.vulkanCapset.alwaysBlob) {
                 struct gfxstreamResourceCreate3d create3d = {};
                 struct VirtGpuExecBuffer exec = {};
@@ -4076,8 +4100,6 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
                 // virtual transport resource using that format contract instead of querying the
                 // host VkImage's private layout. The latter is invalid for optimal tiling and is
                 // not the layout exported through VirtGpu in any case.
-                const uint32_t rowPitch = imageCreateInfo.extent.width * 4;
-                const uint32_t resourceSize = rowPitch * imageCreateInfo.extent.height;
                 bufferBlob = instance->createResource(imageCreateInfo.extent.width,
                                                       imageCreateInfo.extent.height, rowPitch,
                                                       resourceSize, virglFormat, target, bind);
@@ -4436,6 +4458,8 @@ VkResult ResourceTracker::on_vkCreateImage(void* context, VkResult, VkDevice dev
     const VkExternalMemoryImageCreateInfo* extImgCiPtr =
         vk_find_struct_const(pCreateInfo, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
 
+    bool linuxAhbScanoutAlias = false;
+
     if (extImgCiPtr) {
         localExtImgCi = vk_make_orphan_copy(*extImgCiPtr);
         vk_append_struct(&structChainIter, &localExtImgCi);
@@ -4457,6 +4481,18 @@ VkResult ResourceTracker::on_vkCreateImage(void* context, VkResult, VkDevice dev
             // as if VK_IMAGE_CREATE_ALIAS_BIT is set." To avoid flag mismatches on host driver,
             // remove the VK_IMAGE_CREATE_ALIAS_BIT here.
             localCreateInfo.flags &= ~VK_IMAGE_CREATE_ALIAS_BIT;
+
+            // X11 GL frontends conventionally expose BGRA display targets, but
+            // current Android gralloc implementations are only required to
+            // provide RGBA AHardwareBuffers. Keep the guest-visible BGRA view
+            // semantics while creating a format-compatible mutable RGBA image
+            // for the Android transport. Termux:X11's BGRA-content modifier
+            // performs the corresponding presentation swizzle.
+            if (localCreateInfo.format == VK_FORMAT_B8G8R8A8_UNORM) {
+                localCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+                localCreateInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+                linuxAhbScanoutAlias = true;
+            }
         }
 
         const VkImageDrmFormatModifierExplicitCreateInfoEXT* drmFmtMod =
@@ -4652,7 +4688,7 @@ VkResult ResourceTracker::on_vkCreateImage(void* context, VkResult, VkDevice dev
     auto& info = it->second;
 
     info.device = device;
-    info.createInfo = *pCreateInfo;
+    info.createInfo = linuxAhbScanoutAlias ? localCreateInfo : *pCreateInfo;
     info.createInfo.pNext = nullptr;
 
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
@@ -7874,6 +7910,54 @@ VkResult ResourceTracker::presentImageToKumquat(VkImage image, int acquireFenceF
     return ret == 0 ? VK_SUCCESS : VK_ERROR_DEVICE_LOST;
 }
 
+VkResult ResourceTracker::syncMemoryFromKumquat(VkDeviceMemory memory, uint64_t size) {
+    VirtGpuResourcePtr resource;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mLock);
+        const auto memoryIt = info_VkDeviceMemory.find(memory);
+        if (memoryIt == info_VkDeviceMemory.end() || !memoryIt->second.blobPtr) {
+            return VK_ERROR_MEMORY_MAP_FAILED;
+        }
+        resource = memoryIt->second.blobPtr;
+    }
+
+    if (size == 0 || size > resource->getSize()) return VK_ERROR_MEMORY_MAP_FAILED;
+    return resource->transferFromHost(0, size) == 0 ? VK_SUCCESS : VK_ERROR_DEVICE_LOST;
+}
+
+VkResult ResourceTracker::syncImageFromKumquat(VkDeviceMemory memory, uint32_t width,
+                                                uint32_t height) {
+    VirtGpuResourcePtr resource;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mLock);
+        const auto memoryIt = info_VkDeviceMemory.find(memory);
+        if (memoryIt == info_VkDeviceMemory.end() || !memoryIt->second.blobPtr) {
+            return VK_ERROR_MEMORY_MAP_FAILED;
+        }
+        resource = memoryIt->second.blobPtr;
+    }
+
+    if (width == 0 || height == 0) return VK_ERROR_MEMORY_MAP_FAILED;
+    return resource->transferFromHost(0, 0, width, height) == 0 ? VK_SUCCESS
+                                                                : VK_ERROR_DEVICE_LOST;
+}
+
+VkResult ResourceTracker::sendMemoryAhbToSocket(VkDeviceMemory memory, int socketFd) {
+    if (socketFd < 0) return VK_ERROR_INITIALIZATION_FAILED;
+
+    VirtGpuResourcePtr resource;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mLock);
+        const auto memoryIt = info_VkDeviceMemory.find(memory);
+        if (memoryIt == info_VkDeviceMemory.end() || !memoryIt->second.blobPtr) {
+            return VK_ERROR_MEMORY_MAP_FAILED;
+        }
+        resource = memoryIt->second.blobPtr;
+    }
+
+    return resource->sendHardwareBuffer(socketFd) == 0 ? VK_SUCCESS : VK_ERROR_DEVICE_LOST;
+}
+
 uint32_t ResourceTracker::getApiVersionFromInstance(VkInstance instance) {
     std::lock_guard<std::recursive_mutex> lock(mLock);
     uint32_t api = kDefaultApiVersion;
@@ -8139,4 +8223,19 @@ extern "C" __attribute__((visibility("default"))) VkResult
 gfxstream_kumquat_present_image(VkImage image, int acquireFenceFd, int* releaseFenceFd) {
     return gfxstream::vk::ResourceTracker::get()->presentImageToKumquat(image, acquireFenceFd,
                                                                         releaseFenceFd);
+}
+
+extern "C" __attribute__((visibility("default"))) VkResult
+gfxstream_kumquat_sync_memory_from_host(VkDeviceMemory memory, uint64_t size) {
+    return gfxstream::vk::ResourceTracker::get()->syncMemoryFromKumquat(memory, size);
+}
+
+extern "C" __attribute__((visibility("default"))) VkResult
+gfxstream_kumquat_sync_image_from_host(VkDeviceMemory memory, uint32_t width, uint32_t height) {
+    return gfxstream::vk::ResourceTracker::get()->syncImageFromKumquat(memory, width, height);
+}
+
+extern "C" __attribute__((visibility("default"))) VkResult
+gfxstream_kumquat_send_memory_ahb_to_socket(VkDeviceMemory memory, int socketFd) {
+    return gfxstream::vk::ResourceTracker::get()->sendMemoryAhbToSocket(memory, socketFd);
 }

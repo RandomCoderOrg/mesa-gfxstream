@@ -270,6 +270,10 @@ int32_t virtgpu_kumquat_resource_unref(struct virtgpu_kumquat *ptr,
 int32_t virtgpu_kumquat_resource_flush(struct virtgpu_kumquat *ptr,
                                        struct drm_kumquat_resource_flush *cmd);
 
+int32_t virtgpu_kumquat_resource_send_hardware_buffer(struct virtgpu_kumquat *ptr,
+                                                      uint32_t bo_handle,
+                                                      int32_t socket_fd);
+
 int32_t virtgpu_kumquat_resource_map(struct virtgpu_kumquat *ptr, struct drm_kumquat_map *cmd);
 
 int32_t virtgpu_kumquat_resource_unmap(struct virtgpu_kumquat *ptr, uint32_t bo_handle);

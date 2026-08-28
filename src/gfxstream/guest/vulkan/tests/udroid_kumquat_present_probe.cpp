@@ -5,6 +5,8 @@
 
 #include <dlfcn.h>
 #include <poll.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <vulkan/vulkan.h>
 
@@ -16,6 +18,8 @@
 #include <vector>
 
 using PfnPresent = VkResult(VKAPI_PTR*)(VkImage, int, int*);
+using PfnSyncMemory = VkResult(VKAPI_PTR*)(VkDeviceMemory, uint64_t);
+using PfnSyncImage = VkResult(VKAPI_PTR*)(VkDeviceMemory, uint32_t, uint32_t);
 
 static void fail(const char* operation, VkResult result = VK_ERROR_UNKNOWN) {
     std::fprintf(stderr, "[fail] %s: %d\n", operation, result);
@@ -99,6 +103,10 @@ int main(int argc, char** argv) {
         instance_proc<PFN_vkGetDeviceProcAddr>(getInstanceProc, instance, "vkGetDeviceProcAddr");
     auto privatePresent = instance_proc<PfnPresent>(getInstanceProc, VK_NULL_HANDLE,
                                                     "gfxstream_kumquat_present_image");
+    auto privateSyncMemory = instance_proc<PfnSyncMemory>(
+        getInstanceProc, VK_NULL_HANDLE, "gfxstream_kumquat_sync_memory_from_host");
+    auto privateSyncImage = instance_proc<PfnSyncImage>(
+        getInstanceProc, VK_NULL_HANDLE, "gfxstream_kumquat_sync_image_from_host");
 
     uint32_t physicalCount = 0;
     if (enumeratePhysicalDevices(instance, &physicalCount, nullptr) != VK_SUCCESS ||
@@ -198,11 +206,14 @@ int main(int argc, char** argv) {
     LOAD_DEVICE(vkAllocateCommandBuffers);
     LOAD_DEVICE(vkResetCommandBuffer);
     LOAD_DEVICE(vkBeginCommandBuffer);
+    LOAD_DEVICE(vkCmdFillBuffer);
     LOAD_DEVICE(vkCmdPipelineBarrier);
     LOAD_DEVICE(vkCmdClearColorImage);
+    LOAD_DEVICE(vkCmdCopyImageToBuffer);
     LOAD_DEVICE(vkEndCommandBuffer);
     LOAD_DEVICE(vkCreateFence);
     LOAD_DEVICE(vkQueueSubmit);
+    LOAD_DEVICE(vkWaitForFences);
     LOAD_DEVICE(vkGetFenceFdKHR);
     LOAD_DEVICE(vkDestroyFence);
     LOAD_DEVICE(vkQueueWaitIdle);
@@ -280,6 +291,85 @@ int main(int argc, char** argv) {
         std::printf("[pass] exported dedicated Vulkan buffer as DMA-BUF fd=%d size=%" PRIu64
                     "\n",
                     dmaBuf, static_cast<uint64_t>(bufferMemoryRequirements.size));
+
+        const VkCommandPoolCreateInfo poolInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .queueFamilyIndex = queueFamily,
+        };
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+        if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+            fail("vkCreateCommandPool(buffer)");
+        }
+        const VkCommandBufferAllocateInfo commandInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = commandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        if (vkAllocateCommandBuffers(device, &commandInfo, &commandBuffer) != VK_SUCCESS) {
+            fail("vkAllocateCommandBuffers(buffer)");
+        }
+        const VkCommandBufferBeginInfo beginInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+            fail("vkBeginCommandBuffer(buffer)");
+        }
+        constexpr uint32_t fill = 0x7f2040ff;
+        vkCmdFillBuffer(commandBuffer, buffer, 0, bufferInfo.size, fill);
+        const VkBufferMemoryBarrier barrier = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = buffer,
+            .offset = 0,
+            .size = bufferInfo.size,
+        };
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+            fail("vkEndCommandBuffer(buffer)");
+        }
+        const VkFenceCreateInfo fenceInfo = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        };
+        VkFence fence = VK_NULL_HANDLE;
+        if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+            fail("vkCreateFence(buffer)");
+        }
+        const VkSubmitInfo submitInfo = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &commandBuffer,
+        };
+        if (vkQueueSubmit(queue, 1, &submitInfo, fence) != VK_SUCCESS) {
+            fail("vkQueueSubmit(buffer)");
+        }
+        if (vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+            fail("vkWaitForFences(buffer)");
+        }
+
+        result = privateSyncMemory(bufferMemory, bufferInfo.size);
+        std::printf("[probe] transfer-from-host result=%d\n", result);
+        if (result != VK_SUCCESS) fail("gfxstream_kumquat_sync_memory_from_host", result);
+
+        void* mapped = mmap(nullptr, bufferInfo.size, PROT_READ, MAP_SHARED, dmaBuf, 0);
+        if (mapped == MAP_FAILED) fail("mmap(exported buffer)");
+        const auto* words = static_cast<const uint32_t*>(mapped);
+        size_t matchingWords = 0;
+        for (size_t i = 0; i < bufferInfo.size / sizeof(uint32_t); ++i) {
+            matchingWords += words[i] == fill;
+        }
+        std::printf("[probe] exported buffer fill=%08x first=%08x matching=%zu/%zu\n", fill,
+                    words[0], matchingWords, bufferInfo.size / sizeof(uint32_t));
+        munmap(mapped, bufferInfo.size);
+
+        vkDestroyFence(device, fence, nullptr);
+        vkDestroyCommandPool(device, commandPool, nullptr);
         close(dmaBuf);
         vkDestroyBuffer(device, buffer, nullptr);
         vkFreeMemory(device, bufferMemory, nullptr);
@@ -291,6 +381,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    const bool imageReadbackOnly = std::getenv("UDROID_GFXSTREAM_IMAGE_READBACK_ONLY");
     const VkExtent3D extent = {.width = 720, .height = 1280, .depth = 1};
     const VkExternalMemoryImageCreateInfo externalImageInfo = {
         .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
@@ -305,7 +396,7 @@ int main(int argc, char** argv) {
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .tiling = VK_IMAGE_TILING_LINEAR,
         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -365,6 +456,169 @@ int main(int argc, char** argv) {
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     if (vkAllocateCommandBuffers(device, &commandInfo, &commandBuffer) != VK_SUCCESS) {
         fail("vkAllocateCommandBuffers");
+    }
+
+    if (imageReadbackOnly) {
+        const VkDeviceSize readbackSize = extent.width * extent.height * 4;
+        const VkExternalMemoryBufferCreateInfo readbackExternalInfo = {
+            .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        };
+        const VkBufferCreateInfo readbackBufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = &readbackExternalInfo,
+            .size = readbackSize,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        VkBuffer readbackBuffer = VK_NULL_HANDLE;
+        if (vkCreateBuffer(device, &readbackBufferInfo, nullptr, &readbackBuffer) != VK_SUCCESS) {
+            fail("vkCreateBuffer(image copy readback)");
+        }
+        VkMemoryRequirements readbackRequirements = {};
+        vkGetBufferMemoryRequirements(device, readbackBuffer, &readbackRequirements);
+        uint32_t readbackMemoryType = UINT32_MAX;
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+            if (readbackRequirements.memoryTypeBits & (1u << i)) {
+                readbackMemoryType = i;
+                break;
+            }
+        }
+        if (readbackMemoryType == UINT32_MAX) fail("image copy readback memory type");
+        const VkMemoryDedicatedAllocateInfo readbackDedicatedInfo = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+            .buffer = readbackBuffer,
+        };
+        const VkExportMemoryAllocateInfo readbackExportInfo = {
+            .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+            .pNext = &readbackDedicatedInfo,
+            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        };
+        const VkMemoryAllocateInfo readbackAllocationInfo = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = &readbackExportInfo,
+            .allocationSize = readbackRequirements.size,
+            .memoryTypeIndex = readbackMemoryType,
+        };
+        VkDeviceMemory readbackMemory = VK_NULL_HANDLE;
+        if (vkAllocateMemory(device, &readbackAllocationInfo, nullptr, &readbackMemory) !=
+                VK_SUCCESS ||
+            vkBindBufferMemory(device, readbackBuffer, readbackMemory, 0) != VK_SUCCESS) {
+            fail("allocate image copy readback buffer");
+        }
+
+        const VkCommandBufferBeginInfo beginInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+            fail("vkBeginCommandBuffer(image readback)");
+        }
+        VkImageMemoryBarrier barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                             &barrier);
+        const VkClearColorValue color = {{0.75f, 0.25f, 0.5f, 1.0f}};
+        vkCmdClearColorImage(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1,
+                             &barrier.subresourceRange);
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                             &barrier);
+        const VkBufferImageCopy copyRegion = {
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .imageOffset = {0, 0, 0},
+            .imageExtent = extent,
+        };
+        vkCmdCopyImageToBuffer(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               readbackBuffer, 1, &copyRegion);
+        const VkBufferMemoryBarrier readbackBarrier = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = readbackBuffer,
+            .offset = 0,
+            .size = readbackSize,
+        };
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &readbackBarrier, 0,
+                             nullptr);
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+            fail("vkEndCommandBuffer(image readback)");
+        }
+        const VkFenceCreateInfo fenceInfo = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        VkFence fence = VK_NULL_HANDLE;
+        if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+            fail("vkCreateFence(image readback)");
+        }
+        const VkSubmitInfo submitInfo = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &commandBuffer,
+        };
+        if (vkQueueSubmit(queue, 1, &submitInfo, fence) != VK_SUCCESS ||
+            vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+            fail("submit image readback");
+        }
+        result = privateSyncMemory(readbackMemory, readbackSize);
+        std::printf("[probe] image-copy buffer transfer-from-host result=%d\n", result);
+        if (result != VK_SUCCESS) fail("image-copy buffer transfer-from-host", result);
+
+        const VkMemoryGetFdInfoKHR fdInfo = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+            .memory = readbackMemory,
+            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        };
+        int dmaBuf = -1;
+        result = vkGetMemoryFdKHR(device, &fdInfo, &dmaBuf);
+        if (result != VK_SUCCESS || dmaBuf < 0) fail("vkGetMemoryFdKHR(image)", result);
+        struct stat metadata = {};
+        if (fstat(dmaBuf, &metadata) != 0 || metadata.st_size <= 0) fail("fstat(image DMA-BUF)");
+        const size_t mapSize = static_cast<size_t>(metadata.st_size);
+        const auto* bytes = static_cast<const uint8_t*>(
+            mmap(nullptr, mapSize, PROT_READ, MAP_SHARED, dmaBuf, 0));
+        if (bytes == MAP_FAILED) fail("mmap(exported image)");
+        size_t nonzero = 0;
+        uint64_t hash = 1469598103934665603ULL;
+        for (size_t i = 0; i < mapSize; ++i) {
+            nonzero += bytes[i] != 0;
+            hash = (hash ^ bytes[i]) * 1099511628211ULL;
+        }
+        std::printf("[probe] exported image size=%zu nonzero=%zu hash=%016" PRIx64
+                    " first=%02x%02x%02x%02x\n",
+                    mapSize, nonzero, hash, bytes[0], bytes[1], bytes[2], bytes[3]);
+        munmap(const_cast<uint8_t*>(bytes), mapSize);
+        close(dmaBuf);
+        vkDestroyFence(device, fence, nullptr);
+        vkDestroyBuffer(device, readbackBuffer, nullptr);
+        vkFreeMemory(device, readbackMemory, nullptr);
+        vkDestroyCommandPool(device, commandPool, nullptr);
+        vkDestroyImage(device, image, nullptr);
+        vkFreeMemory(device, memory, nullptr);
+        vkDestroyDevice(device, nullptr);
+        auto destroyInstance =
+            instance_proc<PFN_vkDestroyInstance>(getInstanceProc, instance, "vkDestroyInstance");
+        destroyInstance(instance, nullptr);
+        dlclose(library);
+        return nonzero == 0 ? 2 : 0;
     }
 
     VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;

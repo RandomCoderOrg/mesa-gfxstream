@@ -42,6 +42,7 @@
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/socket.h>
 #include "drm-uapi/drm_fourcc.h"
 #include "util/libdrm.h"
 #include "util/cnd_monotonic.h"
@@ -79,6 +80,8 @@
 #endif
 
 #define MAX_DAMAGE_RECTS 64
+#define TERMUX_X11_AHARDWAREBUFFER_BGRA_MODIFIER 1255
+#define TERMUX_X11_AHARDWAREBUFFER_RGBA_MODIFIER 1257
 
 struct wsi_x11_screen_resources {
    struct list_head link;
@@ -1002,6 +1005,15 @@ get_sorted_vk_formats(VkIcdSurfaceBase *surface, struct wsi_device *wsi_device,
 
    if (!visual)
       return false;
+
+   /* Android's public hardware-buffer color contract is RGBA. The custom
+    * socket transport carries that object directly, so advertise the matching
+    * Vulkan format instead of X11's conventional BGRA memory layout. */
+   if (wsi_device->x11.send_memory_ahb_to_socket) {
+      sorted_formats[0] = VK_FORMAT_R8G8B8A8_UNORM;
+      *count = 1;
+      return true;
+   }
 
    /* use the root window's visual to set the default */
    *count = 0;
@@ -2658,7 +2670,43 @@ x11_image_init(VkDevice device_h, struct x11_swapchain *chain,
    }
    image->pixmap = xcb_generate_id(chain->conn);
 
-   if (image->base.drm_modifier != DRM_FORMAT_MOD_INVALID) {
+   if (chain->base.wsi->x11.send_memory_ahb_to_socket) {
+      int sockets[2] = { -1, -1 };
+      if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) != 0)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+      int fds[4] = { sockets[1], -1, -1, -1 };
+      const uint64_t ahb_modifier =
+         pCreateInfo->imageFormat == VK_FORMAT_R8G8B8A8_UNORM ||
+         pCreateInfo->imageFormat == VK_FORMAT_R8G8B8A8_SRGB
+            ? TERMUX_X11_AHARDWAREBUFFER_RGBA_MODIFIER
+            : TERMUX_X11_AHARDWAREBUFFER_BGRA_MODIFIER;
+      cookie =
+         xcb_dri3_pixmap_from_buffers_checked(
+            chain->conn, image->pixmap, chain->window, 1,
+            pCreateInfo->imageExtent.width, pCreateInfo->imageExtent.height,
+            image->base.row_pitches[0], image->base.offsets[0],
+            0, 0, 0, 0, 0, 0, chain->depth, bpp,
+            ahb_modifier, fds);
+      xcb_flush(chain->conn);
+
+      uint8_t ready = 0;
+      ssize_t ready_size;
+      do {
+         ready_size = read(sockets[0], &ready, sizeof(ready));
+      } while (ready_size < 0 && errno == EINTR);
+
+      if (ready_size != sizeof(ready)) {
+         close(sockets[0]);
+         return VK_ERROR_SURFACE_LOST_KHR;
+      }
+
+      result = chain->base.wsi->x11.send_memory_ahb_to_socket(
+         chain->base.device, image->base.memory, sockets[0]);
+      close(sockets[0]);
+      if (result != VK_SUCCESS)
+         return result;
+   } else if (image->base.drm_modifier != DRM_FORMAT_MOD_INVALID) {
       /* If the image has a modifier, we must have DRI3 v1.2. */
       assert(chain->has_dri3_modifiers);
 

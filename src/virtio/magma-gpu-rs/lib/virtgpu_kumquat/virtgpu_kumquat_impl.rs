@@ -342,6 +342,29 @@ impl VirtGpuKumquat {
         }
     }
 
+    pub fn resource_send_hardware_buffer(
+        &mut self,
+        bo_handle: u32,
+        socket: Handle,
+    ) -> Result<()> {
+        let resource = self.resources.get(&bo_handle).ok_or(Error::Unsupported)?;
+        let cmd = kumquat_gpu_protocol_resource_send_hardware_buffer {
+            hdr: kumquat_gpu_protocol_ctrl_hdr {
+                type_: KUMQUAT_GPU_PROTOCOL_RESOURCE_SEND_HARDWARE_BUFFER,
+                ..Default::default()
+            },
+            resource_id: resource.resource_id,
+            padding: 0,
+        };
+        self.stream
+            .write(KumquatGpuProtocolWrite::CmdWithHandle(cmd, socket))?;
+        let mut protocols = self.stream.read()?;
+        match protocols.remove(0) {
+            KumquatGpuProtocol::RespNoData => Ok(()),
+            _ => Err(Error::Unsupported),
+        }
+    }
+
     pub fn map(&mut self, bo_handle: u32) -> Result<MesaMapping> {
         let resource = self
             .resources
@@ -437,6 +460,12 @@ impl VirtGpuKumquat {
             transfer_from_host,
             emulated_fence,
         ))?;
+
+        // A transfer from the host is a readback operation: callers may consume
+        // the resource mapping as soon as this method returns. Keep the event
+        // attached to the resource, then wait for the server to finish copying
+        // before exposing the guest mapping.
+        self.wait(transfer.bo_handle)?;
 
         Ok(())
     }

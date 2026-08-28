@@ -168,6 +168,10 @@ class VirtGpuResource {
     // Optional window-system handoff. Ownership of a non-negative acquire fence transfers to the
     // implementation. On success, ownership of a non-negative release fence transfers back.
     virtual int present(uint32_t, uint32_t, uint32_t, uint32_t, int, int*) { return -ENOTSUP; }
+
+    // Sends the resource's Android hardware buffer to a connected Unix socket.
+    // The caller retains ownership of socketFd.
+    virtual int sendHardwareBuffer(int) { return -ENOTSUP; }
 };
 
 class VirtGpuResourceMapping {

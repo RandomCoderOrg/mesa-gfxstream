@@ -322,6 +322,33 @@ pub unsafe extern "C" fn virtgpu_kumquat_resource_flush(
 }
 
 // SAFETY:
+// `ptr` must be a valid pointer returned by `virtgpu_kumquat_init`. Ownership
+// of the non-negative socket descriptor transfers to this call.
+#[no_mangle]
+pub unsafe extern "C" fn virtgpu_kumquat_resource_send_hardware_buffer(
+    ptr: &mut virtgpu_kumquat_ffi,
+    bo_handle: u32,
+    socket_fd: RawDescriptor,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if socket_fd < 0 {
+            return -EINVAL;
+        }
+        let socket = MagmaGpuHandle {
+            // SAFETY: ownership is transferred by the C ABI contract above.
+            os_handle: unsafe { OwnedDescriptor::from_raw_descriptor(socket_fd) },
+            handle_type: 0,
+        };
+        let result = ptr
+            .lock()
+            .unwrap()
+            .resource_send_hardware_buffer(bo_handle, socket);
+        return_result(result)
+    }))
+    .unwrap_or(-ESRCH)
+}
+
+// SAFETY:
 // `ptr` must be a valid pointer to a `virtgpu_kumquat_ffi` obtained from
 // `virtgpu_kumquat_init`.
 // `cmd` must be a valid pointer to a `drm_kumquat_resource_map` struct and be valid for writes.

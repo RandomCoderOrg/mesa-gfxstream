@@ -696,6 +696,15 @@ PFN_vkVoidFunction gfxstream_vk_GetInstanceProcAddr(VkInstance _instance, const 
     if (pName && strcmp(pName, "gfxstream_kumquat_present_image") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(gfxstream_kumquat_present_image);
     }
+    if (pName && strcmp(pName, "gfxstream_kumquat_sync_memory_from_host") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(gfxstream_kumquat_sync_memory_from_host);
+    }
+    if (pName && strcmp(pName, "gfxstream_kumquat_sync_image_from_host") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(gfxstream_kumquat_sync_image_from_host);
+    }
+    if (pName && strcmp(pName, "gfxstream_kumquat_send_memory_ahb_to_socket") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(gfxstream_kumquat_send_memory_ahb_to_socket);
+    }
     VK_FROM_HANDLE(gfxstream_vk_instance, instance, _instance);
     return vk_instance_get_proc_addr(&instance->vk, &gfxstream_vk_instance_entrypoints, pName);
 }

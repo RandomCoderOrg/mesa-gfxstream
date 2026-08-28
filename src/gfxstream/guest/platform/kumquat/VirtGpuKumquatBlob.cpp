@@ -187,3 +187,18 @@ int VirtGpuKumquatResource::present(uint32_t x, uint32_t y, uint32_t width, uint
     *releaseFenceFd = static_cast<int>(flush.release_fence_handle);
     return 0;
 }
+
+int VirtGpuKumquatResource::sendHardwareBuffer(int socketFd) {
+    if (socketFd < 0) return -EINVAL;
+
+    const int ownedSocketFd = dup(socketFd);
+    if (ownedSocketFd < 0) return -errno;
+
+    const int ret =
+        virtgpu_kumquat_resource_send_hardware_buffer(mVirtGpu, mBlobHandle, ownedSocketFd);
+    if (ret) {
+        mesa_loge("AHardwareBuffer handoff failed with %s for resource %u blob %u",
+                  strerror(-ret), mResourceHandle, mBlobHandle);
+    }
+    return ret;
+}
