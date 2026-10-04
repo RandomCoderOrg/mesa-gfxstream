@@ -333,18 +333,26 @@ pipe_loader_sw_release(struct pipe_loader_device **dev)
    pipe_loader_base_release(dev);
 }
 
+#if defined(HAVE_DRI) && defined(HAVE_ZINK)
+static const driOptionDescription zink_driconf[] = {
+      #include "gallium/drivers/zink/driinfo_zink.h"
+};
+#endif
+
 static const struct driOptionDescription *
 pipe_loader_sw_get_driconf(struct pipe_loader_device *dev, unsigned *count)
 {
+#if defined(HAVE_DRI) && defined(HAVE_ZINK)
+   if (!strcmp(debug_get_option("GALLIUM_DRIVER", ""), "zink")) {
+      *count = ARRAY_SIZE(zink_driconf);
+      return zink_driconf;
+   }
+#endif
    *count = 0;
    return NULL;
 }
 
 #if defined(HAVE_DRI) && defined(HAVE_ZINK)
-static const driOptionDescription zink_driconf[] = {
-      #include "gallium/drivers/zink/driinfo_zink.h"
-};
-
 static const struct driOptionDescription *
 pipe_loader_vk_get_driconf(struct pipe_loader_device *dev, unsigned *count)
 {

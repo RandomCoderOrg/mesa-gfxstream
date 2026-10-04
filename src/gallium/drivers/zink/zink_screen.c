@@ -1147,14 +1147,31 @@ zink_init_screen_caps(struct zink_screen *screen)
    caps->max_varyings =
       MIN2(screen->info.props.limits.maxVertexOutputComponents / 4 / 2, 16);
 
-   caps->dmabuf =
 #if defined(HAVE_LIBDRM) && (DETECT_OS_LINUX || DETECT_OS_BSD)
-      screen->info.have_KHR_external_memory_fd &&
-      screen->info.have_EXT_external_memory_dma_buf &&
-      screen->info.have_EXT_queue_family_foreign
-      ? DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT : 0;
+   caps->dmabuf = 0;
+   if (screen->info.have_KHR_external_memory_fd &&
+       screen->info.have_EXT_external_memory_dma_buf &&
+       screen->info.have_EXT_queue_family_foreign) {
+      const VkPhysicalDeviceExternalBufferInfo info = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
+         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+      };
+      VkExternalBufferProperties props = {
+         .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES,
+      };
+      VKSCR(GetPhysicalDeviceExternalBufferProperties)(screen->pdev, &info,
+                                                       &props);
+      const VkExternalMemoryFeatureFlags features =
+         props.externalMemoryProperties.externalMemoryFeatures;
+      if (features & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)
+         caps->dmabuf |= DRM_PRIME_CAP_IMPORT;
+      if (features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT)
+         caps->dmabuf |= DRM_PRIME_CAP_EXPORT;
+   }
 #else
-      0;
+   caps->dmabuf = 0;
 #endif
 
    caps->depth_bounds_test = screen->info.feats.features.depthBounds;

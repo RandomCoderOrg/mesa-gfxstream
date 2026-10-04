@@ -321,7 +321,8 @@ XXX do this once swapinterval is hooked up
             drawable->window_valid = !!drawable->textures[statts[i]];
          }
 #ifdef VK_USE_PLATFORM_XCB_KHR
-         else if (is_pixmap && statts[i] == ST_ATTACHMENT_FRONT_LEFT && !screen->is_sw) {
+         else if (is_pixmap && statts[i] == ST_ATTACHMENT_FRONT_LEFT &&
+                  !screen->is_sw && screen->dmabuf_import) {
             drawable->textures[statts[i]] = kopper_get_pixmap_buffer(drawable, format);
             if (drawable->textures[statts[i]])
                dri_image_fence_sync(ctx, drawable->image);

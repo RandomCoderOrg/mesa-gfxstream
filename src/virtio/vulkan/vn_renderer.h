@@ -342,6 +342,9 @@ vn_renderer_bo_create_from_dma_buf(struct vn_renderer *renderer,
                                    VkMemoryPropertyFlags flags,
                                    struct vn_renderer_bo **out_bo)
 {
+   if (!renderer->bo_ops.create_from_dma_buf)
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+
    struct vn_renderer_bo *bo;
    VkResult result =
       renderer->bo_ops.create_from_dma_buf(renderer, size, fd, flags, &bo);
